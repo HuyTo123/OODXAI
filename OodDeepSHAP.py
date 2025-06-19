@@ -1,18 +1,17 @@
 """ This method is combine from DeepSHAP and MSP methods."""
 import numpy as np
 
-from pytorch_ood.detector import MaxSoftmax
+from pytorch_ood.detector import MaxSoftmax, EnergyBased, ODIN, Mahalanobis, MCD
 from matplotlib import colors
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from .Explain import DeepExplainer  # Giả sử bạn đã cài đặt SHAP và có thể import từ oodxai.Explain.shap
-# HOẶC, nếu bạn đã expose DeepExplainer trong oodxai/Explain/__init__.py như bạn đã làm:
-# from .Explain import DeepExplainer
+from .Explain import DeepExplainer  
+from scipy.stats import percentileofscore
 
 
 class OODDeepExplainer():
-    def __init__(self, model, method, backgroundata=None, sample=None, device=None):
+    def __init__(self, model, method_name, backgroundata=None, sample=None, device=None):
         """
         Initialize the DeepExplainer with MaxSoftmax for OOD detection Explanation.
 
@@ -28,34 +27,68 @@ class OODDeepExplainer():
             Sample data to explain. If None, it will be inferred from the model.
         device : str or torch.device, optional
             Device to run the model on (e.g., 'cpu' or 'cuda').
+        in_scores_for_calibration: 
+            Use for calibration scores
         """
         self.model = model
         self.backgroundata = backgroundata
         self.device = device
         self.sample = sample
+        self.ind_scores_for_calibration = None
+        self.sample_scores = None
+        self.ood_percentile = None
+        self.probs = None
+        self.shap_values = None
+        if method_name == 'MSP':
+            self.detector = MaxSoftmax(self.model)
+        elif method_name == 'Energy':
+            self.detector = EnergyBased(self.model)
+        else:
+            raise ValueError(f"The method '{method_name}' is not supported.")
+         # --- THỰC HIỆN HIỆU CHỈNH NGAY LẬP TỨC KHI KHỞI TẠO ---
+        print("Bắt đầu hiệu chỉnh OOD detector trên dữ liệu được cung cấp...")
+        # Sử dụng detector đã khởi tạo để tính score trên toàn bộ calibration_loader
+        self.ind_scores_for_calibration = self.detector.predict(self.backgroundata).detach().numpy()
+        print(f"Hiệu chỉnh hoàn tất trên {len(self.ind_scores_for_calibration)} mẫu.")
+        with torch.no_grad():
+            logits = self.model(self.sample)
+            self.probs = F.softmax(logits, dim=1).cpu().numpy()[0]
 
-        if method == 'MSP':
-            self.method = MaxSoftmax
-
-    def MSP_DeepSHAP(self, model, backgroundata = None,  device = None):
-        detector = self.method(model)
-        # Create a DeepSHAP explainer using the detector
-        explainer = DeepExplainer(model, backgroundata)
-        shap_values = explainer.shap_values(self.sample) # Chuyển đổi kích thước tensor về (1,3,128,128) để phù hợp với đầu vào của model
+    def MSP_DeepSHAP(self):
+        # DeepSHAP
+        print('Bắt đầu tính toán Deep SHAP...')
+        explainer = DeepExplainer(self.model, self.backgroundata)
+        shap_values_raw = explainer.shap_values(self.sample)  
+        # Xử lý shap_values để có dạng list cho hàm plot
+        num_classes = shap_values_raw.shape[-1]
+        self.shap_values = [shap_values_raw[0, :, :, :, i] for i in range(num_classes)]
+        print('Đã tính toán và xử lý xong SHAP values.')
+        # MaxSoftmax
+        self.sample_scores = self.detector(self.sample).item()
+        print('Đã tính toán điểm số MaxSoftmax cho mẫu.')
+        self.ood_percentile = percentileofscore(self.ind_scores_for_calibration, self.sample_scores)
+        print('Đã tính toán điểm số MaxSoftmax cho dữ liệu hiệu chỉnh.')
+        return self 
         
         
-        scores = detector(self.sample)
+    #Backup
+    # def MSP_DeepSHAP(self, model, backgroundata = None,  device = None):
+    #     detector = self.method(model)
+    #     # Create a DeepSHAP explainer using the detector
+    #     explainer = DeepExplainer(model, backgroundata)
+    #     shap_values = explainer.shap_values(self.sample) # Chuyển đổi kích thước tensor về (1,3,128,128) để phù hợp với đầu vào của model
+    #     scores = detector(self.sample)
+    #     self.ind_scores_for_calibration = detector(backgroundata).cpu().numpy()
+    #     print("Hiệu chỉnh hoàn tất.")
+    #     processed_shap_values_for_plot = []
+    #     num_output_classes = shap_values.shape[-1] # Lấy số lớp từ chiều cuối cùng (2 trong trường hợp này)
+    #     for i in range(num_output_classes):
+    #         # Lấy SHAP values cho lớp thứ i. Loại bỏ chiều batch (0) và chiều cuối cùng (i)
+    #         # Kết quả sẽ có shape (3, 144, 144)
+    #         shap_for_current_class = shap_values[0, :, :, :, i]
+    #         processed_shap_values_for_plot.append(shap_for_current_class)
 
-        processed_shap_values_for_plot = []
-        num_output_classes = shap_values.shape[-1] # Lấy số lớp từ chiều cuối cùng (2 trong trường hợp này)
-        for i in range(num_output_classes):
-            # Lấy SHAP values cho lớp thứ i. Loại bỏ chiều batch (0) và chiều cuối cùng (i)
-            # Kết quả sẽ có shape (3, 144, 144)
-            shap_for_current_class = shap_values[0, :, :, :, i]
-            processed_shap_values_for_plot.append(shap_for_current_class)
-
-        return processed_shap_values_for_plot, scores
-    
+    #     return processed_shap_values_for_plot
     # PLOT Area
     def create_custom_colormap(self):
         """Tạo một dải màu tùy chỉnh từ Xanh -> Trong suốt -> Đỏ."""
@@ -67,144 +100,67 @@ class OODDeepExplainer():
             "shap_red_blue_transparent",
             [(0., blue), (0.5, transparent_white), (1., red)],
             N=256
-        )
-    def plot_custom_shap(self, shap_values_list, original_image, class_names, scores):
+        ) 
+
+    def _fill_segmentation(self, values, segmentation):
+        """Tô màu các vùng superpixel bằng giá trị SHAP tương ứng."""
+        out = np.zeros(segmentation.shape)
+        for i in range(len(values)):
+            out[segmentation == i + 1] = values[i]
+        return out
+
+    def plot(self, original_image, class_names):
         """
-        Hàm vẽ biểu đồ SHAP tùy chỉnh cho Deep SHAP (phiên bản pixel-wise),
-        với heatmap phủ trực tiếp lên ảnh gốc và colorbar được căn chỉnh.
-
-        Args:
-            shap_values_list (list of np.array): Danh sách các mảng SHAP values,
-                                                 mỗi mảng có shape (C, H, W) hoặc (H, W, C),
-                                                 tương ứng với đóng góp cho mỗi lớp.
-                                                 Ví dụ: `shap_values_list[i]` là map đóng góp cho class `i`.
-            original_image (np.array): Ảnh gốc, định dạng HWC (Height, Width, Channels), giá trị [0, 255].
-            class_names (list): Danh sách tên các lớp.
+        Hàm vẽ biểu đồ SHAP tùy chỉnh.
+        Lấy tất cả dữ liệu cần thiết từ `self`.
         """
-        print("Bắt đầu vẽ biểu đồ giải thích Deep SHAP (phiên bản pixel-wise)...")
+        # Kiểm tra xem hàm explain() đã được chạy chưa
+        if self.shap_values is None or self.sample_scores is None:
+            raise RuntimeError("Vui lòng chạy hàm .explain() trước khi vẽ biểu đồ.")
 
-        if original_image.dtype == np.float32 or original_image.dtype == np.float64:
-            original_image_display = (original_image * 255).astype(np.uint8)
-        else:
-            original_image_display = original_image.astype(np.uint8)
+        print("Bắt đầu vẽ biểu đồ giải thích...")
 
-        self.model.eval()
-        with torch.no_grad():
-            logits = self.model(self.sample)
-            print("\n" + "="*25)
-            print("--- DEBUG BÊN TRONG HÀM PLOT ---")
-            print(f"Logits tính toán cho biểu đồ: {logits.tolist()}")
-            print("="*25 + "\n")
-
-            probs = F.softmax(logits, dim=1).cpu().numpy()[0]
-            predicted_class_index = np.argmax(probs)
-            predicted_class_prob = probs[predicted_class_index]
-
+        # --- Chuẩn bị dữ liệu từ self ---
+        predicted_class_index = np.argmax(self.probs)
         num_classes = len(class_names)
-        fig, axes = plt.subplots(
-            nrows=1, ncols=1 + num_classes,
-            figsize=(5 * (1 + num_classes), 6),
-            constrained_layout=True
-        )
+        max_abs_val = np.abs(np.array(self.shap_values)).max()
+        if max_abs_val == 0: max_abs_val = 1e-6
 
+        # --- Vẽ biểu đồ ---
+        fig, axes = plt.subplots(nrows=1, ncols=1 + num_classes, figsize=(5 * (1 + num_classes), 5))
         custom_colormap = self.create_custom_colormap()
 
-        # --- Vẽ ảnh gốc (cột 1) ---
-        axes[0].imshow(original_image_display)
+        axes[0].imshow(original_image)
         axes[0].set_title("Original Image", fontsize=12)
         axes[0].axis("off")
 
-        # --- Chuẩn hóa SHAP values và tính max_abs_val ---
-        # Ở đây, shap_values_list được kỳ vọng chứa các mảng có shape (C, H, W)
-        # hoặc (H, W, C) cho mỗi lớp.
-        # Chúng ta cần chuẩn hóa chúng về (H, W, C) để tính toán max_abs_val một cách nhất quán
-        
-        normalized_shap_values_for_max_abs = []
-        for idx, s_val in enumerate(shap_values_list):
-            print(f"DEBUG: shap_values_list[{idx}] before processing shape (for max_abs_val): {s_val.shape}")
-            if s_val.ndim == 3:
-                # Nếu là (C, H, W) -> chuyển thành (H, W, C)
-                if s_val.shape[0] == original_image.shape[-1] and s_val.shape[1:] == original_image.shape[:-1]:
-                    normalized_shap_values_for_max_abs.append(np.transpose(s_val, (1, 2, 0)))
-                # Nếu đã là (H, W, C)
-                elif s_val.shape[-1] == original_image.shape[-1] and s_val.shape[:-1] == original_image.shape[:-1]:
-                    normalized_shap_values_for_max_abs.append(s_val)
-                else:
-                    # Fallback nếu không khớp chính xác, cố gắng transpose nếu chiều đầu tiên nhỏ hơn chiều còn lại
-                    if s_val.shape[0] < s_val.shape[1] and s_val.shape[0] <= original_image.shape[-1]:
-                         normalized_shap_values_for_max_abs.append(np.transpose(s_val, (1, 2, 0)))
-                    else:
-                         print(f"WARNING: Unexpected 3D shap_values_list[{idx}] shape: {s_val.shape}. Adding as is.")
-                         normalized_shap_values_for_max_abs.append(s_val) # Add as is, might cause errors if not (H,W,C)
-            elif s_val.ndim == 2: # Already (H, W)
-                normalized_shap_values_for_max_abs.append(s_val)
-            else:
-                raise ValueError(f"shap_values_list[{idx}] has unexpected dimensions: {s_val.shape}. Expected 2D or 3D for max_abs_val calculation.")
-
-        all_shap_values_flat = np.concatenate([np.abs(s).flatten() for s in normalized_shap_values_for_max_abs])
-        max_abs_val = np.max(all_shap_values_flat)
-        if max_abs_val == 0:
-            max_abs_val = 1e-6
-
-        # --- Vẽ các biểu đồ giải thích cho từng lớp ---
-        explanation_axes = []
+        im = None
         for i in range(num_classes):
             ax = axes[i + 1]
-            explanation_axes.append(ax)
-
-            current_shap_map = shap_values_list[i] # Lấy mảng SHAP cho lớp hiện tại
-            print(f"DEBUG: current_shap_map for class {class_names[i]} shape before sum: {current_shap_map.shape}")
+            heatmap_overlay = np.sum(self.shap_values[i], axis=0)
             
-            # Xử lý tùy thuộc vào hình dạng của current_shap_map
-            # Nếu current_shap_map là (C, H, W)
-            if current_shap_map.ndim == 3 and current_shap_map.shape[0] == original_image.shape[-1]: # E.g., (3, 144, 144)
-                # Sum over channels, result will be (H, W)
-                heatmap_overlay = np.sum(current_shap_map, axis=0) # Sum along channel axis (axis=0)
-            # Nếu current_shap_map là (H, W, C)
-            elif current_shap_map.ndim == 3 and current_shap_map.shape[-1] == original_image.shape[-1]: # E.g., (144, 144, 3)
-                # Sum over channels, result will be (H, W)
-                heatmap_overlay = np.sum(current_shap_map, axis=-1)
-            # Nếu current_shap_map đã là (H, W)
-            elif current_shap_map.ndim == 2:
-                heatmap_overlay = current_shap_map
-            else:
-                raise ValueError(f"Unexpected dimension or channel setup for SHAP map for class {class_names[i]}: {current_shap_map.shape}. Expected (C, H, W) or (H, W, C) or (H, W).")
-            
-            print(f"DEBUG: heatmap_overlay for class {class_names[i]} shape after sum: {heatmap_overlay.shape}")
+            ax.imshow(original_image, alpha=0.6)
+            im = ax.imshow(heatmap_overlay, cmap=custom_colormap, vmin=-max_abs_val, vmax=max_abs_val, interpolation='nearest')
 
-            # Đảm bảo heatmap_overlay là 2D (H, W) trước khi imshow
-            if heatmap_overlay.ndim != 2:
-                raise ValueError(f"Final heatmap_overlay for class {class_names[i]} is not 2D. Shape: {heatmap_overlay.shape}")
-
-
-            ax.imshow(original_image_display, alpha=0.6)
-            im = ax.imshow(heatmap_overlay, cmap=custom_colormap,
-                            vmin=-max_abs_val, vmax=max_abs_val,
-                            interpolation='nearest')
-
-            title = f"Class: '{class_names[i]}'\nProb: {probs[i]:.2%}"
+            title = f"Class: '{class_names[i]}'\nProb: {self.probs[i]:.2%}"
             ax.set_title(title, fontsize=10)
             
             if i == predicted_class_index:
                 for spine in ax.spines.values():
-                    spine.set_edgecolor('#FF0000')
-                    spine.set_linewidth(3)
+                    spine.set_edgecolor('#FF0000'); spine.set_linewidth(3)
             ax.axis("off")
 
-        cbar = fig.colorbar(
-            im,
-            ax=explanation_axes,
-            orientation="horizontal",
-            aspect=40,
-            pad=0.04,
-            shrink=0.7
-        )
+        # Tiêu đề và colorbar
+        predicted_class_name = class_names[predicted_class_index]
+        ood_info = f"OOD Score ({self.detector.__class__.__name__}): {self.sample_scores:.2f} (Anomalous: {self.ood_percentile:.1f}%)"
+        final_title = f"Predicted: '{predicted_class_name}' ({self.probs[predicted_class_index]:.1%}) | {ood_info}"
+        fig.suptitle(final_title, fontsize=14)
+        
+        fig.tight_layout(rect=[0, 0.1, 1, 0.9])
+        pos1 = axes[1].get_position()
+        pos_last = axes[-1].get_position()
+        cax = fig.add_axes([pos1.x0, pos1.y0 - 0.1, pos_last.x1 - pos1.x0, 0.05])
+        cbar = fig.colorbar(im, cax=cax, orientation="horizontal")
         cbar.set_label('SHAP Value Contribution', fontsize=10)
-        cbar.ax.tick_params(labelsize=8)
-
-        fig.suptitle(f"Deep SHAP Explanation for Predicted Class: '{class_names[predicted_class_index]}' (Confidence: {scores})",
-                     fontsize=14, y=0.98)
-
+        
         plt.show()
-
-        print("Hoàn thành vẽ biểu đồ giải thích Deep SHAP (phiên bản pixel-wise).")
