@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from .Explain import DeepExplainer  
 from scipy.stats import percentileofscore
+from scipy.ndimage import gaussian_filter
 
 
 class OODDeepExplainer():
@@ -59,6 +60,7 @@ class OODDeepExplainer():
         print('Bắt đầu tính toán Deep SHAP...')
         explainer = DeepExplainer(self.model, self.backgroundata)
         shap_values_raw = explainer.shap_values(self.sample)  
+        
         # Xử lý shap_values để có dạng list cho hàm plot
         num_classes = shap_values_raw.shape[-1]
         self.shap_values = [shap_values_raw[0, :, :, :, i] for i in range(num_classes)]
@@ -123,7 +125,10 @@ class OODDeepExplainer():
         # --- Chuẩn bị dữ liệu từ self ---
         predicted_class_index = np.argmax(self.probs)
         num_classes = len(class_names)
-        max_abs_val = np.abs(np.array(self.shap_values)).max()
+
+        all_shap_values_abs = np.abs(np.array(self.shap_values))
+        max_abs_val = np.percentile(all_shap_values_abs, 99.9)
+        # max_abs_val = np.abs(np.array(self.shap_values)).max() - Old method, don't use 2 lines above
         if max_abs_val == 0: max_abs_val = 1e-6
 
         # --- Vẽ biểu đồ ---
@@ -138,8 +143,8 @@ class OODDeepExplainer():
         for i in range(num_classes):
             ax = axes[i + 1]
             heatmap_overlay = np.sum(self.shap_values[i], axis=0)
-            
-            ax.imshow(original_image, alpha=0.6)
+ 
+            ax.imshow(original_image, alpha=0.3)
             im = ax.imshow(heatmap_overlay, cmap=custom_colormap, vmin=-max_abs_val, vmax=max_abs_val, interpolation='nearest')
 
             title = f"Class: '{class_names[i]}'\nProb: {self.probs[i]:.2%}"
