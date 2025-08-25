@@ -6,9 +6,9 @@ from .Explain._kernel import KernelExplainer # Giả sử KernelExplainer nằm 
 
 # Bạn có thể thêm các import khác ở đây để dễ truy cập
 from .Explain.main.OodDeepSHAP import OODDeepExplainer # Giả sử OodDeepSHAP là một class/hàm bạn muốn expose
-
+from .Explain.main.OodKernalSHAP import OodKernelExplainer # Giả sử OodKernalSHAP là một class/hàm bạn muốn expose
 __all__ = [
-    "DeepExplainer", # Để khi from oodxai import * nó bao gồm DeepExplainer
-    "OodDeepSHAP"
-    "KernelExplainer", # Để khi from oodxai import * nó bao gồm KernelExplainer
+     # Để khi from oodxai import * nó bao gồm DeepExplainer
+    "OODDeepExplainer",
+    "OodKernelExplainer", # Để khi from oodxai import * nó bao gồm KernelExplainer
 ]

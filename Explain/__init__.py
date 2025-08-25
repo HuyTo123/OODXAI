@@ -4,6 +4,7 @@ from ._kernel import KernelExplainer
 
 Deep = DeepExplainer
 Kernel = KernelExplainer
+
 # Gradient = GradientExplainer
 
 __all__ = [

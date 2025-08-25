@@ -68,7 +68,7 @@ class Plot():
             im = ax.imshow(heatmap_overlay, cmap=custom_colormap, vmin=-max_abs_val, vmax=max_abs_val, interpolation='nearest')
 
             # Phần còn lại giữ nguyên logic
-            # title = f"Class: '{class_names[i]}'\nProb: {probs[i]:.2%}"
+            title = f"Class: '{class_names[i]}'\nProb: {probs[i]:.2%}"
             title = f"Class: '{class_names[i]}' "
             ax.set_title(title, fontsize=10)
             
@@ -79,9 +79,9 @@ class Plot():
 
         # Tiêu đề và colorbar (giữ nguyên logic)
         predicted_class_name = class_names[predicted_class_index]
-        # ood_info = f"OOD Score ({detector.__class__.__name__}): {sample_scores:.2f} (Anomalous: {ood_percentile:.1f}%)"
-        # final_title = f"Predicted: '{predicted_class_name}' ({probs[predicted_class_index]:.1%}) | {ood_info}"
-        # fig.suptitle(final_title, fontsize=14)
+        ood_info = f"OOD Score ({detector.__class__.__name__}): {sample_scores:.2f} (Anomalous: {ood_percentile:.1f}%)"
+        final_title = f"Predicted: '{predicted_class_name}' ({probs[predicted_class_index]:.1%}) | {ood_info}"
+        fig.suptitle(final_title, fontsize=14)
         
         fig.tight_layout(rect=[0, 0.1, 1, 0.9])
         pos1 = axes[1].get_position()
