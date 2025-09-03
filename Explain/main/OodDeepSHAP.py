@@ -24,8 +24,8 @@ class OODDeepExplainer(OODExplainerBase):
         print('Đã tính toán và xử lý xong SHAP values.')
         
         return self 
-    def plot(self, original_image, class_names):
-        self.visualization.plot_deepshap(original_image, class_names, self.shap_values, self.sample_scores, self.probs, self.ood_percentile, self.Detector)
+    def plot(self, original_image):
+        self.visualization.plot_deepshap(original_image,  self.class_name, self.shap_values, self.sample_scores, self.probs, self.ood_percentile, self.Detector)
 
 
     

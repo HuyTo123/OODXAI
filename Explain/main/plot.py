@@ -25,28 +25,41 @@ class Plot():
             out[segmentation == i + 1] = values[i]
         return out
 
-    def plot_kernelshap(self, original_image, class_names, segmentation, shap_values, sample_scores=1, probs=1, ood_percentile=1, detector='Unknown'):
+    def plot_kernelshap_with_uncertainty(self, original_image, class_names, segmentation, 
+                                         shap_values, unsafe_segments_tuple=None, 
+                                         sample_scores=1, probs=1, ood_percentile=1, detector='Unknown'):
         """
-        Hàm vẽ biểu đồ SHAP tùy chỉnh cho KernelSHAP (phiên bản superpixel).
-        """
-        # Kiểm tra xem hàm explain() đã được chạy chưa
-        if shap_values is None or sample_scores is None:
-            raise RuntimeError("Vui lòng chạy hàm .explain() trước khi vẽ biểu đồ.")
+        Hàm vẽ biểu đồ SHAP tùy chỉnh cho KernelSHAP, với khả năng tô đỏ
+        các segment được xác định là không an toàn (unsafe/uncertain).
 
-        print("Bắt đầu vẽ biểu đồ giải thích KernelSHAP...")
-        # --- Chuẩn bị dữ liệu ---
+        Parameters
+        ----------
+        unsafe_segments_tuple : tuple, optional
+            Kết quả trả về từ hàm `uncertainty`. 
+            Có dạng ((class_idx, [labels]), ...), by default None
+        """
+        if shap_values is None:
+            raise RuntimeError("Vui lòng cung cấp `shap_values`.")
+
+        print("Bắt đầu vẽ biểu đồ giải thích KernelSHAP với vùng không chắc chắn...")
+        
+        # --- PHẦN 1: Xử lý dữ liệu đầu vào ---
         predicted_class_index = np.argmax(probs)
         num_classes = len(class_names)
-        # Xử lý output của KernelExplainer (có thể là list hoặc một mảng duy nhất)
-        # và xử lý trường hợp phân loại nhị phân
-        sv = shap_values[0]
-        # Tính max_abs_val từ shap_values đã được xử lý
+        sv = shap_values[0] # Giả định shap_values đã được xử lý phù hợp
+        
         all_shap_values_abs = np.abs(np.array(sv))
         max_abs_val = np.percentile(all_shap_values_abs, 99.9)
         if max_abs_val == 0: max_abs_val = 1e-6
+        
+        # Chuyển tuple kết quả `uncertainty` thành dictionary để dễ tra cứu
+        unsafe_segments_dict = {}
+        if unsafe_segments_tuple:
+            for class_idx, labels in unsafe_segments_tuple:
+                unsafe_segments_dict[class_idx] = labels
 
-        # --- Vẽ biểu đồ ---
-        fig, axes = plt.subplots(nrows=1, ncols=1 + num_classes, figsize=(5 * (1 + num_classes), 5))
+        # --- PHẦN 2: Vẽ biểu đồ ---
+        fig, axes = plt.subplots(nrows=1, ncols=1 + num_classes, figsize=(5 * (1 + num_classes), 5.5))
         custom_colormap = self.create_custom_colormap()
 
         axes[0].imshow(original_image)
@@ -57,19 +70,29 @@ class Plot():
         for i in range(num_classes):
             ax = axes[i + 1]
             
-            # *** THAY ĐỔI CỐT LÕI NẰM Ở ĐÂY ***
-            # Thay vì `np.sum`, ta dùng `_fill_segmentation` để tạo heatmap
+            # 1. Vẽ heatmap SHAP như cũ
             heatmap_overlay = self.fill_segmentation(sv[:,i], np.array(segmentation))
-            
-            # Vẽ ảnh gốc mờ làm nền
             ax.imshow(original_image, alpha=0.3)
-            
-            # Vẽ heatmap lên trên
             im = ax.imshow(heatmap_overlay, cmap=custom_colormap, vmin=-max_abs_val, vmax=max_abs_val, interpolation='nearest')
 
-            # Phần còn lại giữ nguyên logic
+            # --- PHẦN 3 (MỚI): Tô màu xanh các vùng không chắc chắn ---
+            if unsafe_segments_dict and i in unsafe_segments_dict:
+                unsafe_labels = unsafe_segments_dict[i]
+                if unsafe_labels: # Kiểm tra nếu danh sách không rỗng
+                    print(f"-> Class {i}: Tô màu đỏ cho các segment không an toàn: {unsafe_labels}")
+                    # Tạo một lớp phủ màu đỏ (RGBA) và khởi tạo là trong suốt
+                    green_overlay = np.zeros((segmentation.shape[0], segmentation.shape[1], 4), dtype=np.uint8)
+                    
+                    for label in unsafe_labels:
+                        mask = (segmentation == label)
+                        # Gán màu đỏ (255,0,0) với độ trong suốt 50% (128)
+                        green_overlay[mask] = [0, 255, 0, 128] 
+                        
+                    # Vẽ lớp phủ màu đỏ lên trên cùng
+                    ax.imshow(green_overlay)
+
+            # Đặt tiêu đề và viền cho ảnh
             title = f"Class: '{class_names[i]}'\nProb: {probs[i]:.2%}"
-            title = f"Class: '{class_names[i]}' "
             ax.set_title(title, fontsize=10)
             
             if i == predicted_class_index:
@@ -77,7 +100,7 @@ class Plot():
                     spine.set_edgecolor('#FF0000'); spine.set_linewidth(3)
             ax.axis("off")
 
-        # Tiêu đề và colorbar (giữ nguyên logic)
+        # --- PHẦN 4: Hoàn thiện biểu đồ ---
         predicted_class_name = class_names[predicted_class_index]
         ood_info = f"OOD Score ({detector.__class__.__name__}): {sample_scores:.2f} (Anomalous: {ood_percentile:.1f}%)"
         final_title = f"Predicted: '{predicted_class_name}' ({probs[predicted_class_index]:.1%}) | {ood_info}"
@@ -90,6 +113,7 @@ class Plot():
         cbar = fig.colorbar(im, cax=cax, orientation="horizontal")
         cbar.set_label('SHAP Value Contribution', fontsize=10)
         plt.show()
+
 
     def plot_deepshap(self, original_image, class_names, shap_values, sample_scores, probs, ood_percentile, detector):
         """

@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter
 from .plot import Plot
 
 class OODExplainerBase():
-    def __init__(self, model=None, Ood_name=None, background_data=None, sample=None, device=None):
+    def __init__(self, model=None, Ood_name=None, background_data=None, sample=None, device=None, class_name=None):
         """
             Initialize the DeepExplainer with MaxSoftmax for OOD detection Explanation.
 
@@ -31,9 +31,9 @@ class OODExplainerBase():
             in_scores_for_calibration: 
                 Use for calibration scores
         """
-        params = [model, Ood_name, background_data, sample, device]
+        params = [model, Ood_name, background_data, sample, device, class_name]
         if any(p is None for p in params):
-            raise ValueError("All of parameters such as: model, Ood_name, background_data, sample, device need to be provided.")
+            raise ValueError("All of parameters such as: model, Ood_name, background_data, sample, device, class_name need to be provided.")
         # User supplied parameters
         self.model = model
         self.background_data = background_data # Dữ liệu nền (background data) cho SHAP
@@ -43,7 +43,8 @@ class OODExplainerBase():
 
         self.model.to(self.device)
         self.sample.to(self.device)
-        
+        self.class_name = class_name
+        self.num_classes = len(class_name)
         #  Package internal parameters
         self.ind_scores_for_calibration = None
         self.Detector = None
@@ -51,7 +52,7 @@ class OODExplainerBase():
         self.ood_percentile = None
         self.probs = None
         self.shap_values = None
-
+        # parameters for Visualization
         self.visualization = Plot()
         with torch.no_grad():
             logits = self.model(sample.to(self.device))
