@@ -62,7 +62,9 @@ class OodKernelExplainer(OODExplainerBase):
             masked_images_np = []
             for mask in z:
                 temp_image = self.image_numpy_unnormalized.copy()
+                # Tuple with 1 array in dim 0
                 inactive_segments = np.where(mask == 0)[0]
+                # Compare label of segments_slic with inactive_segments, transform segment  to True or False, then change to background color for True segments
                 for seg_idx in inactive_segments:
                     temp_image[self.segments_slic == seg_idx] = self.background_color
                 masked_images_np.append(temp_image)
