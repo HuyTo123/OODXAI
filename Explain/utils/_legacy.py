@@ -115,9 +115,12 @@ def convert_to_model(val, keep_index=False):
 
     """
     if isinstance(val, Model):
+        print('Val is model')
         out = val
     else:
+        # Val là 1 function do vậy chúng ta cần convert nó thành class Model có trong đây để tận dụng f
         out = Model(val, None)
+        
 
     # Fix for the sklearn warning
     # 'X does not have valid feature names, but <model> was fitted with feature names'
@@ -139,7 +142,9 @@ def match_model_to_data(model, data):
         if isinstance(data, DenseDataWithIndex):
             out_val = model.f(data.convert_to_df())
         else:
+            # Chỗ này là expected value nè
             out_val = model.f(data.data)
+
     except Exception:
         print("Provided model function fails when applied to the provided data set.")
         raise
@@ -175,7 +180,6 @@ class DenseData(Data):
         self.groups = (
             args[0] if len(args) > 0 and args[0] is not None else [np.array([i]) for i in range(len(group_names))]
         )
-
         j = sum(len(g) for g in self.groups)
         num_samples = data.shape[0]
         t = False
@@ -198,6 +202,7 @@ class DenseData(Data):
         self.group_names = group_names
         self.data = data
         self.groups_size = len(self.groups)
+        # self.transposed = False, self.groups_name là tên các segment, self.data là mảng 0 các segment, self.groups_size là số segment, weight = 1
 
 
 class DenseDataWithIndex(DenseData):

@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
-
-
+from skimage.segmentation import mark_boundaries 
+from scipy.ndimage import center_of_mass
 
 class Plot():
     def __init__(self):
@@ -61,10 +61,30 @@ class Plot():
         # --- PHẦN 2: Vẽ biểu đồ ---
         fig, axes = plt.subplots(nrows=1, ncols=1 + num_classes, figsize=(5 * (1 + num_classes), 5.5))
         custom_colormap = self.create_custom_colormap()
+        image_with_boundaries = mark_boundaries(original_image, segmentation, color=(1, 1, 0)) 
+        
 
-        axes[0].imshow(original_image)
+        axes[0].imshow(image_with_boundaries)
         axes[0].set_title("Original Image", fontsize=12)
         axes[0].axis("off")
+
+        unique_labels = np.unique(segmentation)
+
+        # Lặp qua từng label để tìm tâm và vẽ số
+        for label in unique_labels:
+            # Bỏ qua label 0 nếu nó là background
+            if label == 0:
+                continue
+            
+            # Tìm tọa độ tâm (y, x) của segment hiện tại
+            y, x = center_of_mass(segmentation, segmentation, label)
+            
+            # Dùng ax.text để vẽ số (label) lên vị trí tâm (x, y)
+            axes[0].text(x, y, str(label), 
+                        fontsize=8, 
+                        color='white', 
+                        ha='center', # Căn giữa theo chiều ngang
+                        va='center')
 
         im = None
         for i in range(num_classes):

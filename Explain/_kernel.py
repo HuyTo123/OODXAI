@@ -88,8 +88,11 @@ class KernelExplainer():
         self.link = convert_to_link(link)
         self.keep_index = kwargs.get("keep_index", False)
         self.keep_index_ordered = kwargs.get("keep_index_ordered", False)
+        # Model là 1 class trong file _legacy.py công dụng của nó là gọi hàm model.f tương tức là gọi hàm prediction mà chúng ta mong muốn
         self.model = convert_to_model(model, keep_index=self.keep_index)
+        # self.data là vector binary 0 đầu tiên để model convert và tính toán các thuộc tính cần thiết
         self.data = convert_to_data(data, keep_index=self.keep_index)
+        # Nếu không có gì thay đổi thì đây chính là expected value do kq trả về là phép tính đầu tiên của binary vector 0 
         model_null = match_model_to_data(self.model, self.data)
 
         # enforce our current input type limitations
@@ -111,6 +114,7 @@ class KernelExplainer():
             )
 
         # init our parameters
+        # Nếu là 1 ảnh thì thì N là số ảnh và P chính là số segment
         self.N = self.data.data.shape[0]
         self.P = self.data.data.shape[1]
         self.linkfv = np.vectorize(self.link.f)
@@ -124,6 +128,10 @@ class KernelExplainer():
         #     model_null = model_null.numpy()
         # elif safe_isinstance(model_null, "tensorflow.python.framework.ops.SymbolicTensor"):
         #     model_null = self._convert_symbolic_tensor(model_null)
+
+
+        # trong numpy . T là để chuyển vịm và weights khởi tạo là 1.0, nếu có 1 ảnh thì không cần quan tâm 
+        # model_null là giá trị [số ảnh, giá trị output của số lớp]
         self.fnull = np.sum((model_null.T * self.data.weights).T, 0)
         self.expected_value = self.linkfv(self.fnull)
 
@@ -136,7 +144,7 @@ class KernelExplainer():
             self.expected_value = float(self.expected_value)
         else:
             self.D = self.fnull.shape[0]
-
+        
    
 
     
@@ -211,6 +219,7 @@ class KernelExplainer():
             return out
         # explain the whole dataset
         elif len(X.shape) == 2:
+            # Hình ảnh shape là 2 bao gồm segment và số ảnh (1,42)
             explanations = []
             for i in tqdm(range(X.shape[0]), disable=kwargs.get("silent", False)):
                 data = X[i : i + 1, :]
@@ -220,12 +229,14 @@ class KernelExplainer():
 
             # vector-output
             s = explanations[0].shape
+            # Kiểm tra xem giá trị có thuốc (42,2) tương đương giá trị segment và số lớp không
             if len(s) == 2:
                 outs = [np.zeros((X.shape[0], s[0])) for j in range(s[1])]
                 for i in range(X.shape[0]):
                     for j in range(s[1]):
                         outs[j][i] = explanations[i][:, j]
                 outs = np.stack(outs, axis=-1)
+                # Trả về mảng 3 chiều (số ảnh, số segment, số lớp)
                 return outs
 
             # single-output
@@ -240,12 +251,19 @@ class KernelExplainer():
 
     def explain(self, incoming_instance, **kwargs):
         # convert incoming input to a standardized iml object
+        # input incoming là 1 vector (1)  đại diện cho 1 hình ảnh chuẩn
         instance = convert_to_instance(incoming_instance)
+        # instance sẽ là 1 class gồm 2 thuộc tính . class là vector1 và group_display_values = None
         match_instance_to_data(instance, self.data)
+        # Trả về instance.group_display_values là 1 mảng gồm n_segments với mỗi segment là 1 np.floast(1.0)
 
         # find the feature groups we will test. If a feature does not change from its
         # current value then we know it doesn't impact the model
+        # instance.x là  ma trận 2 chiều bao gồm số ảnh và số segment với giá trị là binary vector full 1 -> ảnh gốc
+        # Hàm này giá trị trả về mục đích nó tìm hiểu là coi có feature nào không quan trọng, có thể bỏ qua bước tính toán không
+        # Đối với hình ảnh thì cái nào cũng quan trọng
         self.varyingInds = self.varying_groups(instance.x)
+
         if self.data.groups is None:
             self.varyingFeatureGroups = np.array([i for i in self.varyingInds])
             self.M = self.varyingFeatureGroups.shape[0]
@@ -259,18 +277,23 @@ class KernelExplainer():
                 # further performance optimization in case each group has a single value
                 if self.varyingFeatureGroups.shape[1] == 1:
                     self.varyingFeatureGroups = self.varyingFeatureGroups.flatten()
+        # Self.M tức là số features cần tính toán là 42 -> y như cũ
+        # Self.varyingFeatureGroups -> sẽ là 1 mảng numpy chứa  index của các segment (features) 
+        # Lưu ý mảng này mảng 1 chiều và phần tử đầu tiên được gán label là 0 -> có thể đây chính là thứ gây ra nguyên nhân start_label = 1
 
         # find f(x)
         if self.keep_index:
             model_out = self.model.f(instance.convert_to_df())
         else:
+            # Tính toán giá trị logic gốc.
             model_out = self.model.f(instance.x)
+        # Hình ảnh thì không có vô đoạn code phía dưới
         if isinstance(model_out, (pd.DataFrame, pd.Series)):
             model_out = model_out.values
         elif safe_isinstance(model_out, "tensorflow.python.framework.ops.SymbolicTensor"):
             model_out = self._convert_symbolic_tensor(model_out)
+        # Lấy giá trị predict thứ nhất cho ảnh 1
         self.fx = model_out[0]
-
         if not self.vector_out:
             self.fx = np.array([self.fx])
 
@@ -289,6 +312,8 @@ class KernelExplainer():
 
         # if more than one feature varies then we have to do real work
         else:
+            # Bài toán hình ảnh thì vô đây.
+            # self.l1_reg là ràng buộc L1 chỉ chọn 10 features đặc biệt
             self.l1_reg = kwargs.get("l1_reg", "num_features(10)")
 
             # pick a reasonable number of samples if the user didn't specify how many they wanted
@@ -304,13 +329,24 @@ class KernelExplainer():
                     self.nsamples = self.max_samples
 
             # reserve space for some of our computations
+            # Khởi tạo các giá trị cần thiết
             self.allocate()
 
             # weight the different subset sizes
+            # Vì tính đối xứng, 1 liên minh có K features có trọng số tương ứng, nên chỉ cần lặp qua num_subset_sizes là được
+            # np.ceil để làm tròn
+            # Vì tính chất đối xứng lên chỉ cần chạy đến segment/2 là đủ
             num_subset_sizes = int(np.ceil((self.M - 1) / 2.0))
+            # Lấy các cặp đối sứng ví dụ 1 và self.M -1  và trong pool self.M chỉ có num_paired cặp đối xứng
             num_paired_subset_sizes = int(np.floor((self.M - 1) / 2.0))
+            # 3 hàm dưới để gán trọng số, lí do mất cái số cách chọn vì lúc này
+            # Ta không quan tâm đến 1 giá trị feature nào đó, ta chỉ quan tâm trọng số khi nếu S có 1 có 2 hoặc có i lần.
+            # Ví dụ A,B,C nếu chọn phần tử đầu A là thì trọng số cũng tương tự như B như C => nên là coi như chúng là 1
+            # Công thức kernelshap weight cũng khử đi xác suất tổ hợp 0 và tổ hợp full 1
             weight_vector = np.array([(self.M - 1.0) / (i * (self.M - i)) for i in range(1, num_subset_sizes + 1)])
+            # Vì tính chất đối xứng nên nổ lực để lấy cái tổ hợp gốc và phần bù trở nên x2 
             weight_vector[:num_paired_subset_sizes] *= 2
+            # Sum lại để ép xác suất về 1 xác suất thể hiện nên lấy mẫu như thế nào
             weight_vector /= np.sum(weight_vector)
             log.debug(f"{weight_vector = }")
             log.debug(f"{num_subset_sizes = }")
@@ -321,13 +357,16 @@ class KernelExplainer():
             # given nsamples*remaining_weight_vector[subset_size]
             num_full_subsets = 0
             num_samples_left = self.nsamples
+            # Tạo ra 1 mảng chưa các segments -> segment 1 được chuyển thành 0 nhé
             group_inds = np.arange(self.M, dtype="int64")
             mask = np.zeros(self.M)
             remaining_weight_vector = copy.copy(weight_vector)
             for subset_size in range(1, num_subset_sizes + 1):
                 # determine how many subsets (and their complements) are of the current size
+                # Thuạt toán này là có bao nhiêu cách chọn n phần tử trong N tập hợp
                 nsubsets = binom(self.M, subset_size)
                 if subset_size <= num_paired_subset_sizes:
+                    # Nhân đôi để tính phần bù
                     nsubsets *= 2
                 log.debug(f"{subset_size = }")
                 log.debug(f"{nsubsets = }")
@@ -341,18 +380,27 @@ class KernelExplainer():
                 )
 
                 # see if we have enough samples to enumerate all subsets of this size
+                # Hàm này là nó sẽ lấy giá trị còn lại của n_samples chưa sử dụng * với xác suất của index  S(liên minh) cặp tương ứng dung *2
+                # Sau đó nó chia với số cách chọn (nsubsets) của index tiếp theo của Liên minh
+                
                 if num_samples_left * remaining_weight_vector[subset_size - 1] / nsubsets >= 1.0 - 1e-8:
                     num_full_subsets += 1
+                    # Ví dụ với cách chọn 1 ta sẽ có prop
                     num_samples_left -= nsubsets
 
                     # rescale what's left of the remaining weight vector to sum to 1
+                    # Chuẩn  hóa về 1 để các prop tiếp theo không bị sai lệch
                     if remaining_weight_vector[subset_size - 1] < 1.0:
                         remaining_weight_vector /= 1 - remaining_weight_vector[subset_size - 1]
 
                     # add all the samples of the current subset size
+                    # Phân bổ cái prop từ ban đầu chia đều cho các thành viên
                     w = weight_vector[subset_size - 1] / binom(self.M, subset_size)
                     if subset_size <= num_paired_subset_sizes:
+                        # Tại vì lấy phần bù nên phải chia 2 đó cu
                         w /= 2.0
+                    # group_inds = số segment nhớ là phần tử đầu là 0
+                    # duyệt qua tất cả các segment á mà
                     for inds in itertools.combinations(group_inds, subset_size):
                         mask[:] = 0.0
                         mask[np.array(inds, dtype="int64")] = 1.0
@@ -361,6 +409,7 @@ class KernelExplainer():
                             mask[:] = np.abs(mask - 1)
                             self.addsample(instance.x, mask, w)
                 else:
+                    print(f"Bạn cần ít nhất là '{np.ceil(nsubsets / remaining_weight_vector[subset_size - 1])}' với tổ hợp '{num_full_subsets+1}' ")
                     break
             log.info(f"{num_full_subsets = }")
 
@@ -369,32 +418,44 @@ class KernelExplainer():
             samples_left = self.nsamples - self.nsamplesAdded
             log.debug(f"{samples_left = }")
             if num_full_subsets != num_subset_sizes:
+                # weight vector vẫn là phân phối ban đầu.
                 remaining_weight_vector = copy.copy(weight_vector)
+                # Chia 2 để không cần tính phần bù
                 remaining_weight_vector[:num_paired_subset_sizes] /= 2  # because we draw two samples each below
+                # num_full_subsets là coi đã xử lí tổ hợp S nào rồi á
                 remaining_weight_vector = remaining_weight_vector[num_full_subsets:]
+                # Chia lại phân phối để ép vào 1, bởi vì khi ta ép lại xác suất và để tính khi đã loại bỏ 1 tập hợp S ra 
+                # Thì weight_vector gốc chưa được thay đổi.
+                # Nên thành ra xuống đây khi lấy xác suất của phần tử nào thỏa ra thì phải ép xác suất lại
                 remaining_weight_vector /= np.sum(remaining_weight_vector)
                 log.info(f"{remaining_weight_vector = }")
                 log.info(f"{num_paired_subset_sizes = }")
+                # Chọn ra các tổ hợp liên minh
                 ind_set = np.random.choice(len(remaining_weight_vector), 4 * samples_left, p=remaining_weight_vector)
                 ind_set_pos = 0
                 used_masks = {}
                 while samples_left > 0 and ind_set_pos < len(ind_set):
                     mask.fill(0.0)
                     ind = ind_set[ind_set_pos]  # we call np.random.choice once to save time and then just read it here
-                    ind_set_pos += 1
+                    # ind có thể = 0 và num_full_sets cũng có thể = 0 cho nên +1 thêm để ra tổ hợp liên minh hợp lí nhất
                     subset_size = ind + num_full_subsets + 1
+                    # Tạo ra 1 vector nhị phân mà chỉ hiển thị subset_size (Kích thước liên minh) segmentation
+                    # Lưu ý là việc chọn segment nào là ngãu nhiên, miễn sao đủ số lượng là được
+                    # Lưu ý là ngẫu nhiên có trọng số, nhưng do vì không đủ samples nên chỉ chọn đúng 1 tổ hợp S là [0] số lượng là subsersize
                     mask[np.random.permutation(self.M)[:subset_size]] = 1.0
 
                     # only add the sample if we have not seen it before, otherwise just
                     # increment a previous sample's weight
                     mask_tuple = tuple(mask)
                     new_sample = False
+                    # nếu mẫu này chưa có thì add
                     if mask_tuple not in used_masks:
                         new_sample = True
                         used_masks[mask_tuple] = self.nsamplesAdded
                         samples_left -= 1
                         self.addsample(instance.x, mask, 1.0)
                     else:
+                        # Nếu mẫu này có rồi thì +1 vô, nhớ là so sánh = tức là số phần tử, trọng số... mới gọi là = nha
                         self.kernelWeights[used_masks[mask_tuple]] += 1.0
 
                     # add the compliment sample
@@ -415,7 +476,6 @@ class KernelExplainer():
                 weight_left = np.sum(weight_vector[num_full_subsets:])
                 log.info(f"{weight_left = }")
                 self.kernelWeights[nfixed_samples:] *= weight_left / self.kernelWeights[nfixed_samples:].sum()
-
             # execute the model on the synthetic samples we have created
             self.run()
 
@@ -426,6 +486,7 @@ class KernelExplainer():
                 vphi, vphi_var = self.solve(self.nsamples / self.max_samples, d)
                 phi[self.varyingInds, d] = vphi
                 phi_var[self.varyingInds, d] = vphi_var
+                #vphi_var có thể sử dụng làm phương sai
 
         if not self.vector_out:
             phi = np.squeeze(phi, axis=1)
@@ -448,9 +509,12 @@ class KernelExplainer():
             return 0 if i == j else 1
 
     def varying_groups(self, x):
+        # Groupsize = segmentation size -> tạo ra dãy numpy [0] với n_segments
         varying = np.zeros(self.data.groups_size)
         for i in range(self.data.groups_size):
+            # lấy idx = label của segment
             inds = self.data.groups[i]
+            # lấy giá trị của segment -> luôn là 1.0
             x_group = x[0, inds]
             if scipy.sparse.issparse(x_group):
                 if all(j not in x.nonzero()[1] for j in inds):
@@ -492,10 +556,15 @@ class KernelExplainer():
         # else:
         #     self.synth_data = np.tile(self.data.data, (self.nsamples, 1))
         
+        # dùng để chứa hình ảnh bị nhiễu 
         self.synth_data = np.tile(self.data.data, (self.nsamples, 1))
+        # Tạo mask => Binary nhị phân với n_samples tương ứng
         self.maskMatrix = np.zeros((self.nsamples, self.M))
+        # Tạo kernel_weights cho từng tổ hợp Coaliation
         self.kernelWeights = np.zeros(self.nsamples)
+        # self.D là số chiều output, self.y là kết quả dự đoán của N samples, và cho N ảnh mong muốn
         self.y = np.zeros((self.nsamples * self.N, self.D))
+        # Tương tự như trên nhưng chỉ cho 1 ảnh 
         self.ey = np.zeros((self.nsamples, self.D))
         self.lastMask = np.zeros(self.nsamples)
         self.nsamplesAdded = 0
@@ -503,7 +572,10 @@ class KernelExplainer():
 
        
     def addsample(self, x, m, w):
+        # Self.N là số ảnh muốn giải đó
+        # nsamplesAdded là số ảnh được thêm vào
         offset = self.nsamplesAdded * self.N
+
         if isinstance(self.varyingFeatureGroups, (list,)):
             for j in range(self.M):
                 for k in self.varyingFeatureGroups[j]:
@@ -511,7 +583,9 @@ class KernelExplainer():
                         self.synth_data[offset : offset + self.N, k] = x[0, k]
         else:
             # for non-jagged numpy array we can significantly boost performance
+            # mặt nạ boolean mới ( chố nào = 1 thì giá trị True)
             mask = m == 1.0
+            # Phần tử nào true mới được giữ lại
             groups = self.varyingFeatureGroups[mask]
             if len(groups.shape) == 2:
                 for group in groups:
@@ -524,50 +598,91 @@ class KernelExplainer():
                 if scipy.sparse.issparse(x) and not scipy.sparse.issparse(self.synth_data):
                     evaluation_data = evaluation_data.toarray()
                 self.synth_data[offset : offset + self.N, groups] = evaluation_data
+        # Ma trận binary vector nè
         self.maskMatrix[self.nsamplesAdded, :] = m
+        # Thêm weight dựa vào giá trị phân bổ đã được chia ra
+        # Lưu ý KernelWeight này khác cái xác suất để chọn nha
         self.kernelWeights[self.nsamplesAdded] = w
         self.nsamplesAdded += 1
 
     def run(self):
+        # Self.N là số ảnh muốn giải thích, không biết nsamplesRun là gì nhưng nó = 0
         num_to_run = self.nsamplesAdded * self.N - self.nsamplesRun * self.N
         data = self.synth_data[self.nsamplesRun * self.N : self.nsamplesAdded * self.N, :]
+        # Bước này để predict trên các tập mẫu nè
+        # Data ở đây là 360 binary vector dựa theo các chiến lược đó ku
+
         modelOut = self.model.f(data)
+        # Self.y bây giờ kết quả dự đoán của N_samples với  D output
         self.y[self.nsamplesRun * self.N : self.nsamplesAdded * self.N, :] = np.reshape(modelOut, (num_to_run, self.D))
         # find the expected value of each output
+        # self.samplesRun là các mẫu đã được tạo rồi, còn self.y về lý thuyết là tính kỳ vọng
+        # nhưng shape vẫn là (n_samples, class)
         self.ey, self.nsamplesRun = _exp_val(
             self.nsamplesRun, self.nsamplesAdded, self.D, self.N, self.data.weights, self.y, self.ey
         )
+        # ey_array = np.asarray(self.ey)
+        # print(ey_array[0], self.y[0]) 
+        # Tính trung bình có trọng số nhưng chắc tại N = 1 nên trung bình như nhau
+        
+       
 
     def solve(self, fraction_evaluated, dim):
+        # dim là  số chiều out_put á nha
+        # self.ey trong đây là giá trị y chang self.y
         eyAdj = self.linkfv(self.ey[:, dim]) - self.link.f(self.fnull[dim])
+
+      
+        #  self.maskMatrix là 1 mặt nạ nhị phân đại diện cho S ngẫu nhiên
+        # s là tính tổng số 1 -> tại vì chỉ có 0,1 nên sum = số feature được xuất hiên
+        # Lưu ý là self.maskMatrix nếu theo chiến lược 2 thì nó chỉ chọn đúng 1 tổ hợp S
+        # Và phần bù 1 - S lý do là phải chọn đủ mẫu cho 1 tổ hợp á.       
         s = np.sum(self.maskMatrix, 1)
+              
 
         # do feature selection if we have not well enumerated the space
         nonzero_inds = np.arange(self.M)
+        # Chọn các phần tử không bị loại khỏi danh sách
         log.debug(f"{fraction_evaluated = }")
         if self.l1_reg == "auto":
             warnings.warn("l1_reg='auto' is deprecated and will be removed in a future version.", DeprecationWarning)
         if (self.l1_reg not in ["auto", False, 0]) or (fraction_evaluated < 0.2 and self.l1_reg == "auto"):
+            # self.M - S sẽ ra 1 kích thước của 1 liên minh bù, ví dụ  s là (1,42,1,42,29,12) -> thì self.M - s sẽ là (42,1,42,1,12,29)
+            # self.KernelWeihts sẽ nhân trọng số với phần bù, tại vì theo tính chất kernelWeight thì trọng số S và 1 - S = nhau
+            # Cuối cùng là w_aug sẽ tạo ra 1 mảng sếp chồng theo chiều ngang
+            # Nối chúng lại sẽ có 1 ngàn mẫu nhiễu với trọng số tương ứng được tính từ kernelWeights
             w_aug = np.hstack((self.kernelWeights * (self.M - s), self.kernelWeights * s))
+            
             log.info(f"{np.sum(w_aug) = }")
             log.info(f"{np.sum(self.kernelWeights) = }")
+            # Căn bậc 2, lý do là chúng ta muốn giải quyết bài toán giảm thiểu sai số của [weight * sai số ^2]
+            # mà sckit-learn không phù hợp nên chia căn 2 (sqrt(w) * Y - sqrt(w) * X * β)² = w * (Y - X * β)²
+            # Nói chung là để đưa vào bình phương á mà, hệ hệ.
             w_sqrt_aug = np.sqrt(w_aug)
+
             eyAdj_aug = np.hstack((eyAdj, eyAdj - (self.link.f(self.fx[dim]) - self.link.f(self.fnull[dim]))))
             eyAdj_aug *= w_sqrt_aug
+            # eyAjd_aug chính là giá trị Dự đoán - baseline * với trọng số
             mask_aug = np.transpose(w_sqrt_aug * np.transpose(np.vstack((self.maskMatrix, self.maskMatrix - 1))))
+            # vector nhị phân hoàn chỉnh của bộ dữ liệu tăng cường
             # var_norms = np.array([np.linalg.norm(mask_aug[:, i]) for i in range(mask_aug.shape[1])])
 
             # select a fixed number of top features
             if isinstance(self.l1_reg, str) and self.l1_reg.startswith("num_features("):
+                # Thằng r là ràng buộc cho L1 regulization, tức là chỉ chọn ra 10 features quan trọng nhất
+                # có thể thay đổi ở l1_reg
                 r = int(self.l1_reg[len("num_features(") : -1])
+                # Least Angle Regression thứ này sẽ tính các segment quan trọng -> giảm kích thước
                 nonzero_inds = lars_path(mask_aug, eyAdj_aug, max_iter=r)[1]
 
             # use an adaptive regularization method
             elif self.l1_reg in ("auto", "bic", "aic"):
+
                 c = "aic" if self.l1_reg == "auto" else self.l1_reg
 
                 # "Normalize" parameter of LassoLarsIC was deprecated in sklearn version 1.2
                 if version.parse(sklearn.__version__) < version.parse("1.2.0"):
+
                     kwg = dict(normalize=False)
                 else:
                     kwg = {}
@@ -578,14 +693,22 @@ class KernelExplainer():
             else:
                 nonzero_inds = np.nonzero(Lasso(alpha=self.l1_reg).fit(mask_aug, eyAdj_aug).coef_)[0]
 
+        # Cập nhật lại danh sách chưa các segment quan trọng nhất chính là nonzero_inds
+        # Nếu không thì lấy mặc định
         if len(nonzero_inds) == 0:
             return np.zeros(self.M), np.ones(self.M)
 
         # eliminate one variable with the constraint that all features sum to the output
+        # Lý do sử dụng M-1 là kiểu như phương pháp thế y = 3x vào phuognw trình x + y/3x(stand_for) = 10 
         eyAdj2 = eyAdj - self.maskMatrix[:, nonzero_inds[-1]] * (
             self.link.f(self.fx[dim]) - self.link.f(self.fnull[dim])
         )
+        # chuyền về ma trận có M-1 segment (số lượng ảnh, segment đã trích lọc - nonzero_inds)
+        # Etmp là 1 vector nhị phân được tính dựa vào tham chiếu
+        # self.maskMatrix[:, , nonzero_inds[:-1]] nó sẽ lấy trạng tái bật/tắt của các feature quan trọng mà Lasso đã tìm ra
+        # Sau đó trừ đi trạng thái của feature cuối cùng là nonzero_inds[-1] để làm tham chiếu.
         etmp = np.transpose(np.transpose(self.maskMatrix[:, nonzero_inds[:-1]]) - self.maskMatrix[:, nonzero_inds[-1]])
+
         log.debug(f"{etmp[:4, :] = }")
 
         # solve a weighted least squares equation to estimate phi
@@ -603,8 +726,12 @@ class KernelExplainer():
         #     lm = LinearRegression(fit_intercept=False).fit(etmp, eyAdj2, sample_weight=self.kernelWeights)
         # Under the hood, as of scikit-learn version 1.3, LinearRegression still uses np.linalg.lstsq and
         # there are more performant options. See https://github.com/scikit-learn/scikit-learn/issues/22855.
+        # Y = kết quả
         y = np.asarray(eyAdj2)
+        # X = ma trận binayry với các segment đã thay đổi trạng thái so với tham chiếu. 
+        # Bao gồm 3 giá trị 1 là cùng trái chiều dương, 0 là cùng chiều, -1 là trái chiều âm
         X = etmp
+        # Trọng số nhân với ma trận binary 
         WX = self.kernelWeights[:, None] * X
         try:
             w = np.linalg.solve(X.T @ WX, WX.T @ y)
@@ -629,12 +756,17 @@ class KernelExplainer():
         log.debug(f"self.fnull = {self.fnull[dim]}")
         log.debug(f"self.link(self.fnull) = {self.link.f(self.fnull[dim])}")
         phi = np.zeros(self.M)
+        # Các giá trị từ 0 đến len - 1 = w
         phi[nonzero_inds[:-1]] = w
+        # F(x) - f(expect) - sum(w)
         phi[nonzero_inds[-1]] = (self.link.f(self.fx[dim]) - self.link.f(self.fnull[dim])) - sum(w)
         log.info(f"{phi = }")
 
         # clean up any rounding errors
         for i in range(self.M):
+            # Giá trị shapely bé hơn 1*10^-10 = 0
+            # Cập nhật phi về lại các segment gốc, tức là segment nào không được đề cập thì = 0,
+            # Ví dụ ở trên là 500,10 -> 500,42
             if np.abs(phi[i]) < 1e-10:
                 phi[i] = 0
 

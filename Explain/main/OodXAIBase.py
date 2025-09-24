@@ -12,7 +12,7 @@ from scipy.ndimage import gaussian_filter
 from .plot import Plot
 
 class OODExplainerBase():
-    def __init__(self, model=None, Ood_name=None, background_data=None, sample=None, device=None, class_name=None):
+    def __init__(self, model=None, Ood_name=None, background_data=None, sample=None, device=None, class_name=None, logits = None):
         """
             Initialize the DeepExplainer with MaxSoftmax for OOD detection Explanation.
 
@@ -55,8 +55,8 @@ class OODExplainerBase():
         # parameters for Visualization
         self.visualization = Plot()
         with torch.no_grad():
-            logits = self.model(sample.to(self.device))
-            self.probs = F.softmax(logits, dim=1).cpu().numpy()[0]
+            self.logits = self.model(sample.to(self.device))
+            self.probs = F.softmax(self.logits, dim=1).cpu().numpy()[0]
 
 
         print(f"Using device: {self.device}, Base has completely loaded.")
@@ -81,9 +81,11 @@ class OODExplainerBase():
                 self.Detector = EnergyBased(self.model)
             else:
                 raise ValueError(f"The method '{self.Ood_name}' is not supported.")
-            self.ind_scores_for_calibration = self.Detector.predict(self.background_data.to(self.device)).cpu().detach().numpy()
-            self.sample_scores = self.Detector(self.sample.to(self.device)).item()
-            self.ood_percentile = percentileofscore(self.ind_scores_for_calibration, self.sample_scores)
+            ind_scores_for_calibration = self.Detector.predict(self.background_data.to(self.device)).cpu().detach().numpy()
+            sample_scores = self.Detector(self.sample.to(self.device)).item()
+            ood_percentile = percentileofscore(ind_scores_for_calibration, sample_scores)
+            return  sample_scores, ood_percentile
+
             print(f"Đã hoàn thành tính toán OOD với phương pháp :{self.Ood_name}")
 
            
