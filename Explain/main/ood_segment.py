@@ -8,7 +8,7 @@ import torchvision.transforms as transforms
 from PIL import Image
 import math
 from numpy.linalg import pinv
-
+from collections import Counter
 from sklearn.metrics.pairwise import cosine_similarity
 
 from oodxai.Explain.main.OodXAIBase import OODExplainerBase
@@ -43,12 +43,13 @@ class Ood_segment(OODExplainerBase):
         self.inv_cov_matrices = None # Sẽ được tính sau
         print("-> Ood_segment đã được tạo và cấu hình đúng chuẩn.")
 
-    def Extract(self, top_k=3):
+    def Extract(self):
         """
         Trích xuất đặc trưng (phiên bản mở rộng).
         """
-        print(f"\n--- Bắt đầu quy trình trích xuất đặc trưng (phiên bản 4 loại thông tin) ---")
-        
+        print(f"\n--- Bắt đầu quy trình trích xuất đặc trưng phiên bản top_k tối ưu ---")
+        MAX_K_TO_ANALYZE = 10 # Cố định k tối đa = 10 theo yêu cầu
+        k_votes = [] # List để lưu phiếu bầu k_j của mỗi ảnh
         temp_results = {class_idx: [] for class_idx in range(self.num_classes)}
         segment_label_topk_nsamples = {class_idx: [] for class_idx in range(self.num_classes)}
 
@@ -57,9 +58,8 @@ class Ood_segment(OODExplainerBase):
             # Chuyển std và mean sang numpy array với kiểu float32 một cách tường minh
             std = np.array(self.transform_std, dtype=np.float32)
             mean = np.array(self.transform_mean, dtype=np.float32)
-
             np_image = tensor_image.cpu().numpy().transpose((1, 2, 0))
-            
+
             # Phép tính giờ đây là float32 * float32 + float32 -> kết quả là float32
             np_image = std * np_image + mean
             return np.clip(np_image, 0, 1)
@@ -131,7 +131,7 @@ class Ood_segment(OODExplainerBase):
             
             # Xử lí các trường hợp đặc biệt
             if len(positive_shap_indices) == 0:
-                num_cols_to_pad = 4 * top_k
+                num_cols_to_pad = 3 * MAX_K_TO_ANALYZE
                 row_data = [i] + [np.nan] * num_cols_to_pad
                 temp_results[predicted_class].append(row_data)
                 continue
@@ -146,15 +146,62 @@ class Ood_segment(OODExplainerBase):
             # Thực hiện việc sort dựa vào giá trị x[0] là shapely_values
             sorted_by_shap = sorted(shap_label_pairs, key=lambda x: x[0], reverse=True)
             # Chọn ra từ 0 -> k
-            top_k_segments = sorted_by_shap[:top_k]
+            sorted_positive_values = [x[0] for x in sorted_by_shap]
+            
+            if len(sorted_positive_values) <= 1:
+                k_votes.append(1) # Bầu cho 1 nếu không đủ so sánh
+            
+            else:
+                # --- 1. Tính k_gap (Logic "Điểm rơi" - Elbow Point) ---
+                k_gap = 1 # Mặc định là 1
+                values_to_compare_gap = sorted_positive_values[:MAX_K_TO_ANALYZE]
+                if len(values_to_compare_gap) > 1:
+                    # Tính độ sụt giảm h_k - h_{k+1}
+                    drops = [values_to_compare_gap[k] - values_to_compare_gap[k+1] for k in range(len(values_to_compare_gap) - 1)]
+                    if drops: # Nếu list drops không rỗng
+                        k_j_index = np.argmax(drops)
+                        k_gap = k_j_index + 1
+                
+                # --- 2. Tính k_constraint (Logic "Ràng buộc" - >50% Sum) ---
+                k_constraint = 1 # Mặc định là 1
+                total_positive_shap = np.sum(sorted_positive_values) # Tổng của TẤT CẢ shap dương
+                
+                if total_positive_shap > 0:
+                    cumulative_sum = 0
+                    k_constraint_found = False
+                    values_to_compare_constraint = sorted_positive_values[:MAX_K_TO_ANALYZE]
+                    
+                    for k_index in range(len(values_to_compare_constraint)):
+                        cumulative_sum += values_to_compare_constraint[k_index]
+                        
+                        # Kiểm tra xem tổng tích lũy đã > 50% tổng TOÀN BỘ chưa
+                        if cumulative_sum > (0.5 * total_positive_shap):
+                            k_constraint = k_index + 1 # Chuyển 0-based index sang 1-based k
+                            k_constraint_found = True
+                            break # Đã tìm thấy k nhỏ nhất
+                    
+                    if not k_constraint_found:
+                        # Nếu lặp hết top 10 mà vẫn không > 50%
+                        # Bầu cho k lớn nhất có thể
+                        k_constraint = len(values_to_compare_constraint) if values_to_compare_constraint else 1
+                
+                # --- 3. Quyết định k_j cuối cùng ---
+                # "Luôn tìm gap LỚN NHẤT (k_gap), rồi MỚI xét ràng buộc (k_constraint)"
+                # Logic: k_j phải thỏa mãn CẢ HAI, nên ta lấy k lớn hơn.
+                k_j = max(k_gap, k_constraint)
+                k_votes.append(k_j)
+            # --- *** LOGIC MỚI KẾT THÚC TẠI ĐÂY *** ---
 
+            # --- THAY ĐỔI: GIAI ĐOẠN 1, Bước 3b - Trích xuất "dư thừa" ---
+            # Trích xuất đặc trưng cho tất cả MAX_K_TO_ANALYZE segments
+            segments_to_extract = sorted_by_shap[:MAX_K_TO_ANALYZE]
             #  Chuẩn bị các bước tính toán tiếp theo
             top_intensities = []
             top_shap_probs = []
             top_pixel_counts = []
             top_segment_label = []
             
-            for shap_values, segment_label in top_k_segments:
+            for shap_values, segment_label in segments_to_extract:
                 # prop
                 prop = round(shap_values / total_positive_shap, 3) if total_positive_shap > 0 else 0
                 top_shap_probs.append(prop)
@@ -171,13 +218,13 @@ class Ood_segment(OODExplainerBase):
                 else:
                     top_intensities.append(np.nan)
             # Làm đầy dữ liệu
-            while len(top_intensities) < top_k:
+            while len(top_intensities) < MAX_K_TO_ANALYZE:
                 top_intensities.append(np.nan)
-            while len(top_shap_probs) < top_k:
+            while len(top_shap_probs) < MAX_K_TO_ANALYZE:
                 top_shap_probs.append(np.nan)
-            while len(top_pixel_counts) < top_k:
+            while len(top_pixel_counts) < MAX_K_TO_ANALYZE:
                 top_pixel_counts.append(np.nan)
-            while len(top_segment_label) < top_k:
+            while len(top_segment_label) < MAX_K_TO_ANALYZE:
                 top_segment_label.append(np.nan)
 
             # Kết hợp dữ liệu thành một hàng
@@ -187,21 +234,91 @@ class Ood_segment(OODExplainerBase):
             temp_results[predicted_class].append(row_data)
             segment_label_topk_nsamples[predicted_class].append(row_segment)
            
+        if not k_votes:
+            print("!!! Cảnh báo: Không có phiếu bầu nào được ghi nhận. Đặt k_final=1.")
+            k_final = 3
+        else:
+            # Tính toán k_optimal theo yêu cầu: chọn k lớn nhất khi bằng phiếu
+            counts = Counter(k_votes)
+            max_freq = max(counts.values())
+            # Tìm tất cả các k có cùng tần suất cao nhất
+            tied_ks = [k for k, freq in counts.items() if freq == max_freq]
+            k_optimal = max(tied_ks) # CHỌN K LỚN NHẤT theo yêu cầu
+            
+            # Tính k_final theo công thức
+            k_final = k_optimal 
+            
+            print(f"\n--- Tính toán Top-K tối ưu ---")
+            print(f"Phiếu bầu K (k_j): {counts}")
+            print(f"Giá trị K có nhiều phiếu nhất (k_optimal): {k_optimal} (ưu tiên k lớn nhất khi bằng phiếu)")
+            print(f"==> K cuối cùng được sử dụng (k_final = k_optimal + 1): {k_final}")
+
+        # Giới hạn k_final không vượt quá MAX_K_TO_ANALYZE
+        if k_final > MAX_K_TO_ANALYZE:
+            print(f"!!! Cảnh báo: k_final ({k_final}) vượt quá MAX_K_TO_ANALYZE ({MAX_K_TO_ANALYZE}). Giới hạn k_final = {MAX_K_TO_ANALYZE}.")
+            k_final = MAX_K_TO_ANALYZE
 
         result_list = []
-        num_final_cols = 1 + 3 * top_k
+        num_full_cols = 1 + 3 * MAX_K_TO_ANALYZE # Số cột đầy đủ
         for class_idx, matrix_list in sorted(temp_results.items()):
             if matrix_list:
-                matrix_np = np.array(matrix_list )
+                matrix_np = np.array(matrix_list)
                 result_list.append((class_idx, matrix_np))
             else:
-                result_list.append((class_idx, np.empty((0, num_final_cols))))
-        self.aggregated_intensities_tuple = tuple(result_list)
-        self.mean(top_k)
+                result_list.append((class_idx, np.empty((0, num_full_cols))))
+        
+        # 5b. Cắt tỉa result_list (dữ liệu đặc trưng)
+        final_result_list = []
+        # Tạo list các chỉ số cột cần giữ
+        cols_to_keep = [0] # Cột ID
+        cols_to_keep.extend(range(1, k_final + 1)) # Cột shap_prob (từ 1 đến k_final)
+        cols_to_keep.extend(range(MAX_K_TO_ANALYZE + 1, MAX_K_TO_ANALYZE + k_final + 1)) # Cột intensity
+        cols_to_keep.extend(range(2 * MAX_K_TO_ANALYZE + 1, 2 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột pixel_count
+        
+        for class_idx, matrix_np in result_list:
+            if matrix_np.size > 0:
+                trimmed_matrix = matrix_np[:, cols_to_keep]
+                final_result_list.append((class_idx, trimmed_matrix))
+            else:
+                # Ma trận rỗng, cần tạo ma trận rỗng mới với đúng số cột đã cắt
+                num_final_cols_trimmed = 1 + 3 * k_final
+                final_result_list.append((class_idx, np.empty((0, num_final_cols_trimmed))))
+        
+        # Gán dữ liệu đã cắt tỉa vào thuộc tính của class
+        self.aggregated_intensities_tuple = tuple(final_result_list)
+        
+        # 5c. Cắt tỉa segment_label_topk_nsamples (dữ liệu nhãn)
+        final_segment_label_data = {}
+        cols_to_keep_labels = [0] # Cột ID
+        cols_to_keep_labels.extend(range(1, k_final + 1)) # Cột label (từ 1 đến k_final)
+        
+        for class_idx, rows_list in segment_label_topk_nsamples.items():
+            if rows_list:
+                matrix_np_labels = np.array(rows_list)
+                # Đảm bảo ma trận không rỗng trước khi cắt
+                if matrix_np_labels.size > 0:
+                     trimmed_matrix_labels = matrix_np_labels[:, cols_to_keep_labels]
+                     final_segment_label_data[class_idx] = trimmed_matrix_labels.tolist() # Chuyển lại thành list of lists
+                else:
+                     final_segment_label_data[class_idx] = []
+            else:
+                final_segment_label_data[class_idx] = []
+                
+        # Ghi đè segment_label_topk_nsamples bằng bản đã cắt tỉa
+        segment_label_topk_nsamples = final_segment_label_data # Biến này sẽ được truyền đi
+        
+        # --- GIAI ĐOẠN 2, Bước 6 - Gọi các hàm con với k_final ---
+        
+        self.mean(k_final) # <-- THAY ĐỔI: Gọi self.mean với k_final
+        
         representative_samples = self.it_should_be_like_that()
         representative_segment_labels = self.get_labels_for_representatives(representative_samples, segment_label_topk_nsamples)
+        
         print(f"\n--- Hoàn tất trích xuất đặc trưng. Kết quả có dạng ma trận mở rộng. ---")
-        return self.aggregated_intensities_tuple, representative_segment_labels, self.mean_features, self.inv_cov_matrices
+        print(self.mean_features)
+        
+        return self.aggregated_intensities_tuple, representative_segment_labels, self.mean_features, self.inv_cov_matrices, k_final
+        
     def mean(self, top_k):
         """
         Tính toán các mô hình thống kê (mean, covariance, inverse covariance)
@@ -213,7 +330,7 @@ class Ood_segment(OODExplainerBase):
         - self.inv_cov_matrices: Dict chứa list các ma trận hiệp phương sai nghịch đảo.
         ví dụ: {class_0: [inv_cov_k1, inv_cov_k2, ...], class_1: [...]}
         """
-        print(f"\n--- Bắt đầu tính toán {top_k} mô hình thống kê cho từng bậc segment ---")
+        print(f"\n--- Bắt đầu tính toán  mô hình với top_k {top_k} thống kê cho từng bậc segment ---")
         
         # 1. Khởi tạo danh sách kết quả BÊN NGOÀI vòng lặp
         summary_list = []
@@ -352,105 +469,249 @@ class Ood_segment(OODExplainerBase):
         return results
 
 
-
-
- # def Extract(self, top_k=2):
-    #     """
-    #     Trích xuất đặc trưng bằng cách:
-    #     1. Dự đoán lớp của mỗi ảnh nền.
-    #     2. Chỉ phân tích SHAP values của lớp được dự đoán đó.
-    #     3. Tổng hợp các đặc trưng theo từng lớp đã được dự đoán.
-    #     """
-    #     print(f"\n--- Bắt đầu quy trình trích xuất đặc trưng theo dự đoán của model ---")
+    def extract_and_save_statistics(self, output_filename=None):
+        """
+        Thực hiện quy trình trích xuất đặc trưng đầy đủ (tương tự Extract)
+        nhưng KHÔNG tính toán mẫu đại diện.
         
-    #     # 1. Khởi tạo bộ chứa kết quả
-    #     temp_results = {class_idx: [] for class_idx in range(self.num_classes)}
-
-    #     def denormalize_image(tensor_image):
-    #         np_image = tensor_image.cpu().numpy().transpose((1, 2, 0))
-    #         np_image = self.transform_std * np_image + self.transform_mean
-    #         np_image = np.clip(np_image, 0, 1)
-    #         return (np_image * 255).astype(np.uint8)
-
-    #     # 2. Bắt đầu Vòng lặp chính qua từng ảnh nền
-    #     print(f"Bắt đầu xử lý {len(self.background_data)} ảnh nền...")
-    #     for image_tensor in tqdm(self.background_data, desc="Processing Images"):
-            
-    #         # --- 3. DỰ ĐOÁN LỚP CỦA ẢNH HIỆN TẠI ---
-    #         with torch.no_grad():
-    #             # Thêm một chiều batch (unsqueeze) để đưa vào model
-    #             logits = self.model(image_tensor.unsqueeze(0).to(self.device))
-    #             predicted_class = torch.argmax(logits, dim=1).item()
-    #             print(predicted_class)
-
-    #         # --- 4. PHÂN TÍCH SHAP CÓ MỤC TIÊU ---
-    #         image_numpy_unnormalized = denormalize_image(image_tensor)
-    #         segments_slic = slic(image_numpy_unnormalized, n_segments=self.n_segments,
-    #                              compactness=self.compactness, sigma=self.sigma, start_label=self.start_label)
-    #         num_actual_superpixels = len(np.unique(segments_slic))
-    #         background_color = image_numpy_unnormalized.mean((0,1))
-    #         # Hàm prediction_function không thay đổi
-    #         transform_for_prediction = transforms.Compose([
-    #             transforms.ToTensor(),
-    #             transforms.Normalize(self.transform_mean, self.transform_std)
-    #         ])
-    #         def prediction_function(z):
-    #             masked_images_np = []
-    #             for mask in z:
-    #                 temp_image = image_numpy_unnormalized.copy()
-    #                 inactive_segments = np.where(mask == 0)[0]
-    #                 for seg_idx in inactive_segments:
-    #                     temp_image[segments_slic == seg_idx] = background_color
-    #                 masked_images_np.append(temp_image)
-                
-    #             tensors = torch.stack(
-    #                 [transform_for_prediction(Image.fromarray(img.astype(np.uint8))) for img in masked_images_np]
-    #             ).to(self.device)
-                
-    #             self.model.eval()
-    #             with torch.no_grad():
-    #                 logits_shap = self.model(tensors)
-    #             return logits_shap.cpu().numpy()
-    #         explainer = KernelExplainer(prediction_function, np.zeros((1, num_actual_superpixels)))
-    #         shap_values_for_image = explainer.shap_values(np.ones((1, num_actual_superpixels)), nsamples=self.num_samples)
-
-    #         # --- 5. TRÍCH XUẤT ĐẶC TRƯNG TỪ LỚP ĐÃ DỰ ĐOÁN ---
-    #         # Lấy SHAP values của đúng lớp đã được dự đoán
-    #         shap_values_for_predicted_class = shap_values_for_image[0, :, predicted_class]
-    #         print(np.sum(shap_values_for_predicted_class) + explainer.expected_value[predicted_class], 'ket qua', logits)
-
-    #         # Chỉ xét các segment có SHAP value > 0 -> Kết quả là vị trí (index) của các segment này -> vị trí vẫn giữ nguyên so với shap_values_for_class 
-    #         # ví dụ [0,2, 5] có nghĩa là segment 0, segment 2, segment 5 có SHAP dương
-    #         positive_shap_indices = np.where(shap_values_for_predicted_class > 0)[0]
-            
-    #         # Nếu không có segment nào có SHAP dương, ta bỏ qua ảnh này
-    #         if len(positive_shap_indices) == 0:
-    #             continue
-    #         positive_shap_values = shap_values_for_predicted_class[positive_shap_indices]
-
-    #         # 2. Ghép cặp (SHAP value, label) lại với nhau
-    #         shap_label_pairs = list(zip(positive_shap_values, positive_shap_indices))
-
-    #         # 3. SẮP XẾP danh sách các cặp này dựa trên SHAP value giảm dần
-    #         sorted_by_shap = sorted(shap_label_pairs, key=lambda x: x[0], reverse=True)
-    #         top_k_segments = sorted_by_shap[:top_k]
-
-    #         # Tính toán và lưu giá trị RGB trung bình cho các segment dương
-    #         top_intensities = []
-    #         for _, segment_label in top_k_segments:
-    #             mask = (segments_slic == segment_label)
-    #             pixels_in_segment = image_numpy_unnormalized[mask]
-    #             if pixels_in_segment.size > 0:
-    #                 avg_intensity = np.mean(pixels_in_segment)
-    #                 top_intensities.append(avg_intensity)
-
-    #         temp_results[predicted_class].extend(top_intensities)
-
-    #     # --- 7. KẾT THÚC: Chuyển đổi sang định dạng tuple cuối cùng ---
-    #     result_list = []
-    #     for class_idx, values in sorted(temp_results.items()):
-    #         result_list.append((class_idx, values))
+        Thay vào đó, nó sẽ lưu các mô hình thống kê quan trọng
+        (k_final, mean_features, inv_cov_matrices) vào một file .txt.
+        """
+        print(f"\n--- Bắt đầu quy trình trích xuất và lưu thống kê ---")
         
-    #     self.aggregated_intensities_tuple = tuple(result_list)
-    #     print(f"\n--- Hoàn tất trích xuất đặc trưng. ---")
-    #     return self.aggregated_intensities_tuple
+        # Đặt tên file output mặc định nếu không được cung cấp
+        if output_filename is None:
+            output_filename = f"model_stats_{self.Ood_name or 'default'}.txt"
+
+        # --- GIAI ĐOẠN 1: TRÍCH XUẤT (Tương tự hàm Extract) ---
+        MAX_K_TO_ANALYZE = 10 # Cố định k tối đa = 10
+        k_votes = [] # List để lưu phiếu bầu k_j của mỗi ảnh
+        temp_results = {class_idx: [] for class_idx in range(self.num_classes)}
+        segment_label_topk_nsamples = {class_idx: [] for class_idx in range(self.num_classes)}
+
+        # 1. HÀM HELPER: Giải chuẩn hóa về numpy float [0, 1]
+        def get_float_image_from_tensor(tensor_image):
+            std = np.array(self.transform_std, dtype=np.float32)
+            mean = np.array(self.transform_mean, dtype=np.float32)
+            np_image = tensor_image.cpu().numpy().transpose((1, 2, 0))
+            np_image = std * np_image + mean
+            return np.clip(np_image, 0, 1)
+
+        print(f"Bắt đầu xử lý {len(self.background_data)} ảnh nền...")
+        for i, image_tensor in enumerate(tqdm(self.background_data, desc="Processing Images for Stats")):
+            
+            with torch.no_grad():
+                logits = self.model(image_tensor.unsqueeze(0).to(self.device))
+                predicted_class = torch.argmax(logits, dim=1).item()
+
+            # 2. CHUẨN BỊ ẢNH VÀ PHÂN MẢNH
+            image_numpy_float = get_float_image_from_tensor(image_tensor)
+            segments_slic = slic(image_numpy_float, n_segments=self.n_segments,
+                                compactness=self.compactness, sigma=self.sigma, start_label=self.start_label)
+            num_actual_superpixels = len(np.unique(segments_slic))
+            background_color = image_numpy_float.mean((0, 1))
+
+            transform_for_prediction = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Resize((224, 224)),
+                    transforms.Normalize(self.transform_mean, self.transform_std)
+                ])
+            
+            # 3. PREDICTION_FUNCTION "VECTOR HÓA"
+            def prediction_function(z):
+                batch_size = 10
+                all_logits = []
+                h, w, c = image_numpy_float.shape
+                unique_labels = np.unique(segments_slic)
+                for i in range(0, z.shape[0], batch_size):
+                    z_batch = z[i:i + batch_size]
+                    masked_images_np = []
+                    
+                    for mask in z_batch:
+                        temp_image = image_numpy_float.copy()
+                        inactive_segments = np.where(mask == 0)[0]
+                        inactive_labels = unique_labels[inactive_segments]
+                        mask_all_inactive = np.isin(segments_slic, inactive_labels)
+                        temp_image[mask_all_inactive] = background_color
+                        masked_images_np.append(temp_image)
+                    
+                    tensors = torch.stack(
+                        [transform_for_prediction(img) for img in masked_images_np]
+                    ).to(self.device)
+
+                    with torch.no_grad():
+                        logits_shap = self.model(tensors)
+                    all_logits.append(logits_shap.cpu().numpy())
+                return np.concatenate(all_logits, axis=0)
+            
+            # 4. CHẠY SHAP
+            explainer = KernelExplainer(prediction_function, np.zeros((1, num_actual_superpixels)))
+            shap_values_for_image = explainer.shap_values(np.ones((1, num_actual_superpixels)), nsamples=self.num_samples)
+
+            # 5. TÍNH TOÁN K_J (Top-K cho ảnh)
+            shap_values_for_predicted_class = shap_values_for_image[0, :, predicted_class]
+            positive_shap_indices = np.where(shap_values_for_predicted_class > 0)[0]
+            
+            if len(positive_shap_indices) == 0:
+                num_cols_to_pad = 3 * MAX_K_TO_ANALYZE
+                row_data = [i] + [np.nan] * num_cols_to_pad
+                temp_results[predicted_class].append(row_data)
+                continue
+            
+            positive_shap_values = shap_values_for_predicted_class[positive_shap_indices]
+            shap_label_pairs = list(zip(positive_shap_values, positive_shap_indices))
+            sorted_by_shap = sorted(shap_label_pairs, key=lambda x: x[0], reverse=True)
+            sorted_positive_values = [x[0] for x in sorted_by_shap]
+            
+            if len(sorted_positive_values) <= 1:
+                k_votes.append(1)
+            else:
+                # k_gap
+                k_gap = 1
+                values_to_compare_gap = sorted_positive_values[:MAX_K_TO_ANALYZE]
+                if len(values_to_compare_gap) > 1:
+                    drops = [values_to_compare_gap[k] - values_to_compare_gap[k+1] for k in range(len(values_to_compare_gap) - 1)]
+                    if drops:
+                        k_j_index = np.argmax(drops)
+                        k_gap = k_j_index + 1
+                
+                # k_constraint
+                k_constraint = 1
+                total_positive_shap = np.sum(sorted_positive_values)
+                if total_positive_shap > 0:
+                    cumulative_sum = 0
+                    k_constraint_found = False
+                    values_to_compare_constraint = sorted_positive_values[:MAX_K_TO_ANALYZE]
+                    
+                    for k_index in range(len(values_to_compare_constraint)):
+                        cumulative_sum += values_to_compare_constraint[k_index]
+                        if cumulative_sum > (0.5 * total_positive_shap):
+                            k_constraint = k_index + 1
+                            k_constraint_found = True
+                            break
+                    if not k_constraint_found:
+                        k_constraint = len(values_to_compare_constraint) if values_to_compare_constraint else 1
+                
+                # Quyết định k_j
+                k_j = max(k_gap, k_constraint)
+                k_votes.append(k_j)
+
+            # 6. TRÍCH XUẤT ĐẶC TRƯNG "DƯ THỪA" (CHO MAX_K)
+            segments_to_extract = sorted_by_shap[:MAX_K_TO_ANALYZE]
+            top_intensities, top_shap_probs, top_pixel_counts, top_segment_label = [], [], [], []
+            
+            total_positive_shap = np.sum(positive_shap_values) # Tính lại tổng SHAP dương
+            
+            for shap_values, segment_label in segments_to_extract:
+                prop = round(shap_values / total_positive_shap, 3) if total_positive_shap > 0 else 0
+                top_shap_probs.append(prop)
+                top_segment_label.append(segment_label)
+                
+                mask = (segments_slic == segment_label)
+                pixels_in_segment = image_numpy_float[mask]
+                pixel_count = pixels_in_segment.shape[0]
+                top_pixel_counts.append(pixel_count)
+                
+                if pixels_in_segment.size > 0:
+                    avg_intensity = np.mean(pixels_in_segment) * 255
+                    top_intensities.append(avg_intensity)
+                else:
+                    top_intensities.append(np.nan)
+
+            # Làm đầy dữ liệu
+            while len(top_intensities) < MAX_K_TO_ANALYZE: top_intensities.append(np.nan)
+            while len(top_shap_probs) < MAX_K_TO_ANALYZE: top_shap_probs.append(np.nan)
+            while len(top_pixel_counts) < MAX_K_TO_ANALYZE: top_pixel_counts.append(np.nan)
+
+            row_data = [i]  + top_shap_probs + top_intensities + top_pixel_counts 
+            temp_results[predicted_class].append(row_data)
+           
+        # --- GIAI ĐOẠN 2: TÍNH TOÁN K_FINAL VÀ CẮT TỈA ---
+        if not k_votes:
+            print("!!! Cảnh báo: Không có phiếu bầu nào. Đặt k_final=3.")
+            k_final = 3
+        else:
+            counts = Counter(k_votes)
+            max_freq = max(counts.values())
+            tied_ks = [k for k, freq in counts.items() if freq == max_freq]
+            k_optimal = max(tied_ks)
+            k_final = k_optimal + 1
+            print(f"\n--- Tính toán Top-K tối ưu ---")
+            print(f"Phiếu bầu K (k_j): {counts}")
+            print(f"Giá trị K có nhiều phiếu nhất (k_optimal): {k_optimal}")
+            print(f"==> K cuối cùng được sử dụng (k_final = k_optimal + 1): {k_final}")
+
+        if k_final > MAX_K_TO_ANALYZE:
+            print(f"!!! Cảnh báo: k_final ({k_final}) vượt quá MAX_K_TO_ANALYZE. Giới hạn k_final = {MAX_K_TO_ANALYZE}.")
+            k_final = MAX_K_TO_ANALYZE
+
+        # Sắp xếp và Cắt tỉa result_list (dữ liệu đặc trưng)
+        result_list = []
+        num_full_cols = 1 + 3 * MAX_K_TO_ANALYZE
+        for class_idx, matrix_list in sorted(temp_results.items()):
+            if matrix_list:
+                result_list.append((class_idx, np.array(matrix_list)))
+            else:
+                result_list.append((class_idx, np.empty((0, num_full_cols))))
+        
+        final_result_list = []
+        cols_to_keep = [0] # Cột ID
+        cols_to_keep.extend(range(1, k_final + 1)) # Cột shap_prob
+        cols_to_keep.extend(range(MAX_K_TO_ANALYZE + 1, MAX_K_TO_ANALYZE + k_final + 1)) # Cột intensity
+        cols_to_keep.extend(range(2 * MAX_K_TO_ANALYZE + 1, 2 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột pixel_count
+        
+        for class_idx, matrix_np in result_list:
+            if matrix_np.size > 0:
+                final_result_list.append((class_idx, matrix_np[:, cols_to_keep]))
+            else:
+                num_final_cols_trimmed = 1 + 3 * k_final
+                final_result_list.append((class_idx, np.empty((0, num_final_cols_trimmed))))
+        
+        self.aggregated_intensities_tuple = tuple(final_result_list)
+        
+        # --- GIAI ĐOẠN 3: TÍNH TOÁN THỐNG KÊ ---
+        
+        # Gọi hàm mean để tính toán và gán self.mean_features, self.inv_cov_matrices
+        self.mean(k_final) 
+        
+        print(f"\n--- Hoàn tất trích xuất đặc trưng (bỏ qua mẫu đại diện) ---")
+        print(f"k_final được xác định là: {k_final}")
+        print(f"mean_features shape: {self.mean_features.shape}")
+        print(f"inv_cov_matrices shape: {self.inv_cov_matrices.shape}")
+
+        # --- GIAI ĐOẠN 4: LƯU FILE THEO YÊU CẦU ---
+        
+        print(f"Đang lưu kết quả vào file: {output_filename}...")
+        
+        if output_filename is None:
+            output_filename = f"model_stats_{self.Ood_name or 'default'}.npz"
+        elif not output_filename.endswith('.npz'):
+            output_filename = output_filename.rsplit('.', 1)[0] + '.npz'
+            
+        print(f"Đang lưu kết quả tối ưu vào file: {output_filename}...")
+
+        try:
+            # Sử dụng np.savez_compressed để lưu nhiều array vào 1 file
+            # Nó nhanh, nén, và giữ nguyên kiểu dữ liệu/shape
+            np.savez_compressed(
+                output_filename, 
+                k_final=k_final,  # Lưu k_final (số nguyên)
+                mean_features=self.mean_features, # Lưu array 3D
+                inv_cov_matrices=self.inv_cov_matrices # Lưu array 4D
+            )
+            
+            print(f"Đã lưu file thành công: {output_filename}")
+            
+            # Trả về các giá trị đã tính, phòng trường hợp bạn muốn dùng
+            return k_final, self.mean_features, self.inv_cov_matrices
+
+        except Exception as e:
+            print(f"ĐÃ XẢY RA LỖI trong quá trình lưu file .npz: {e}")
+            import traceback
+            traceback.print_exc()
+            # Vẫn trả về giá trị dù lưu file lỗi
+            return k_final, self.mean_features, self.inv_cov_matrices
+
+                    # Vẫn trả về giá trị dù lưu file lỗi
+
+ 

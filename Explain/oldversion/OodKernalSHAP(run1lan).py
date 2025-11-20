@@ -12,7 +12,7 @@ import math
 from scipy.stats import chi2
 from pathlib import Path
 import traceback
-from collections import Counter
+
 import warnings
 warnings.filterwarnings("ignore")
 class OodKernelExplainer(OODExplainerBase):
@@ -107,15 +107,16 @@ class OodKernelExplainer(OODExplainerBase):
         torch.cuda.empty_cache()
 
         
-    def explain(self, n_shap_runs=10): # Thêm tham số n_shap_runs
+    def explain(self):
         """
         Đây là phương thức CÔNG KHAI DUY NHẤT để chạy toàn bộ quy trình.
-        (SỬA ĐỔI): Chạy SHAP n_shap_runs lần, tính SHAP value trung bình
-        và tìm các segment xuất hiện nhiều nhất (từ TẤT CẢ các segment dương).
+        Nó sẽ tự động làm mọi thứ: phân vùng, tạo ảnh, dự đoán và tính SHAP.
         """
         print("\n--- Bắt đầu quy trình giải thích của KernelSHAP ---")
       
-        # 1. Phân vùng ảnh bằng Superpixel (Giữ nguyên)
+
+        # Calculate OOD score for the sample
+        # 1. Phân vùng ảnh bằng Superpixel
         transform_for_slic = transforms.Compose([
             transforms.Resize((224, 224)),
             transforms.ToTensor()
@@ -129,18 +130,31 @@ class OodKernelExplainer(OODExplainerBase):
         num_actual_superpixels = len(np.unique(self.segments_slic))
         print(f"1. Phân vùng ảnh thành {num_actual_superpixels} siêu pixel.")
 
-        # 2. Định nghĩa hàm dự đoán nội bộ (Giữ nguyên)
+        # 2. Định nghĩa hàm dự đoán nội bộ
+        # Hàm này sẽ được truyền vào KernelExplainer và được gọi tự động
         def transform_masked_image(numpy_img):
+            """
+            Hàm này nhận một ảnh NumPy float [0,1] và chuẩn hóa nó đúng cách.
+            """
+            # Chuyển NumPy (H, W, C) sang Tensor (C, H, W) mà KHÔNG chia lại cho 255
             tensor_img = torch.from_numpy(numpy_img.transpose(2, 0, 1)).float()
+            
+            # Chuẩn hóa như bình thường
             return transforms.functional.normalize(tensor_img, self.transform_mean, self.transform_std)
 
         def prediction_function(z):
-            batch_size = 10
+            batch_size = 10 # Xử lý 10 ảnh mỗi lần, bạn có thể điều chỉnh số này
+            
+            # Danh sách để lưu kết quả dự đoán của từng lô nhỏ
             all_logits = []
             unique_labels = np.unique(self.segments_slic)
-            # Thêm leave=False để tqdm không làm lộn xộn output của vòng lặp ngoài
-            for i in tqdm(range(0, z.shape[0], batch_size), desc="SHAP Batches", leave=False):
+            # Vòng lặp để xử lý z theo từng lô
+            for i in tqdm(range(0, z.shape[0], batch_size), desc="SHAP Batches"):
+                # Lấy ra một lô nhỏ các mặt nạ
                 z_batch = z[i:i + batch_size]
+
+                
+                # --- Phần code bên trong giữ nguyên, nhưng chỉ cho lô nhỏ ---
                 masked_images_np = []
                 for mask in z_batch:
                     temp_image = self.image_numpy_0_1.copy()
@@ -156,107 +170,65 @@ class OodKernelExplainer(OODExplainerBase):
                         
                 self.model.eval()
                 with torch.no_grad():
+                    # Dự đoán trên lô nhỏ
                     logits = self.model(tensors)
+                
+                # Thêm kết quả của lô này vào danh sách
                 all_logits.append(logits)
             
+            # Nối tất cả các kết quả từ các lô nhỏ lại thành một mảng lớn duy nhất
             all_logits_numpy = [l.cpu().numpy() for l in all_logits]
+            # Concate để ra tonsor (batch_size, classes_numbs)
             return np.concatenate(all_logits_numpy, axis=0)
 
-        # 3. Khởi tạo KernelExplainer VÀ CHẠY n_shap_runs LẦN
-        print(f"2. Bắt đầu tính toán SHAP values ({n_shap_runs} lần, {self.num_samples} mẫu/lần)...")
+        # 3. Khởi tạo KernelExplainer và tính toán SHAP values
+        print(f"2. Bắt đầu tính toán SHAP values với {self.num_samples} mẫu...")
         explainer = KernelExplainer(prediction_function, np.zeros((1, num_actual_superpixels)))
-        
-        all_shap_values_list = [] # List để lưu kết quả các lần chạy
-        frequent_segment_labels = {} # Dict để lưu 10 segment thường gặp nhất
-        
-        for class_idx in range(self.num_classes):
-            frequent_segment_labels[class_idx] = []
-            
-        # Vòng lặp chạy SHAP
-        for i in tqdm(range(n_shap_runs), desc="SHAP Runs"):
-            run_shap_values = explainer.shap_values(np.ones((1, num_actual_superpixels)), nsamples=self.num_samples)
-            all_shap_values_list.append(run_shap_values)
-            
-            # --- [LOGIC MỚI BẮT ĐẦU TỪ ĐÂY] ---
-            # Thu thập TẤT CẢ các segment dương của LẦN CHẠY NÀY
-            for class_idx in range(self.num_classes):
-                shap_values_for_class = run_shap_values[0, :, class_idx]
-                
-                # 1. Lấy TẤT CẢ các segment có SHAP value dương
-                positive_shap_indices = np.where(shap_values_for_class > 0)[0]
-                
-                if len(positive_shap_indices) == 0:
-                    continue
-                
-                # 2. KHÔNG SẮP XẾP, KHÔNG LẤY TOP 10
-                # Thêm TẤT CẢ segment dương của lần chạy này vào list tổng
-                frequent_segment_labels[class_idx].extend(positive_shap_indices)
-            # --- [HẾT LOGIC MỚI] ---
-
-        # 4. Tính toán SHAP value TRUNG BÌNH và gán vào self.shap_values
-        self.shap_values = np.mean(all_shap_values_list, axis=0)
-        print("3. Tính toán SHAP values (Trung bình) hoàn tất!")
-
-        # 5. Xử lý hậu kỳ: Lọc ra các segment xuất hiện nhiều nhất
-        final_frequent_labels = {}
-        for class_idx in range(self.num_classes):
-            if not frequent_segment_labels[class_idx]:
-                final_frequent_labels[class_idx] = []
-                continue
-                
-            # Đếm tần suất TẤT CẢ segment dương đã thu thập
-            segment_counts = Counter(frequent_segment_labels[class_idx])
-            
-            # Sắp xếp tất cả các segment theo tần suất giảm dần
-            all_most_frequent_pairs = segment_counts.most_common() 
-            all_most_frequent_labels = [label for label, count in all_most_frequent_pairs]
-            
-            final_frequent_labels[class_idx] = all_most_frequent_labels
-            # In ra top 10 cho người dùng xem
-            print(f"  Class {class_idx}: 10 segments xuất hiện nhiều nhất (trong {len(all_most_frequent_labels)}): {all_most_frequent_labels[:10]}")
-
-        # 6. Tính toán các segment bị uncertainity
-        # Truyền TOÀN BỘ danh sách segment (đã sắp xếp theo tần suất) vào hàm uncertainty
-        sample_features, sample_labels = self.uncertainty(final_frequent_labels)
+        self.shap_values = explainer.shap_values(np.ones((1, num_actual_superpixels)), nsamples=self.num_samples)
+        shap_values_for_class1 = self.shap_values[0, :, 0]
+        shap_values_for_class2 = self.shap_values[0, :, 1]
+       
+        print("3. Tính toán SHAP values hoàn tất!")
+        # Tính toán các segment bị uncertainity
+        sample_features, sample_labels = self.uncertainty()
         self.sample_labels_topk = sample_labels
         self.uncertainty_segments = self.find_unsafe_segments(sample_features, sample_labels)
 
-        return self # Trả về self để có thể gọi .plot() nối tiếp
-
 
         return self # Trả về self để có thể gọi .plot() nối tiếp
-    def uncertainty (self, frequent_segment_labels):
+    def uncertainty (self):
         temp_results = {class_idx: [] for class_idx in range(self.num_classes)}
         temp_labels = {}
         for class_idx in range(self.num_classes):
-            top_10_frequent_labels = frequent_segment_labels.get(class_idx, [])
-            
-            # 2. Trích xuất self.top_k segment từ danh sách đó
-            top_k_labels = top_10_frequent_labels[:self.top_k]
-            temp_labels[class_idx] = top_k_labels
-            
-            if not top_k_labels: # Nếu list rỗng
+            # Lấy SHAP values của class hiện tại
+            shap_values_for_class = self.shap_values[0, :, class_idx]       
+            # 1. Lấy cả GIÁ TRỊ và VỊ TRÍ (label) của các segment có SHAP value > 0
+            positive_shap_indices = np.where(shap_values_for_class > 0)[0]
+            print(f'giá trị tích cực tới class "{class_idx}"',positive_shap_indices)
+            if len(positive_shap_indices) == 0:
+                # Nếu không có segment dương, ta vẫn cần xử lý để giữ shape
+                # Tạo một hàng rỗng với đúng số cột
                 num_cols = 1 + 3 * self.top_k
                 empty_row = [0] + [np.nan] * (num_cols - 1)
                 temp_results[class_idx] = empty_row
                 continue
 
-            # 3. Lấy SHAP value TRUNG BÌNH (từ self.shap_values) cho top_k_labels
-            # self.shap_values giờ là SHAP value trung bình (đã tính trong explain)
-            shap_values_for_class = self.shap_values[0, :, class_idx]
+            # Lấy các giá trị SHAP tương ứng
+            positive_shap_values = shap_values_for_class[positive_shap_indices]
+            total_positive_shap = np.sum(positive_shap_values)
+
             
-            top_k_segments = [] # List các cặp (shap_value, label)
-            total_positive_shap = 0
+            # 2. Ghép cặp (SHAP value, label) lại với nhau
+            shap_label_pairs = list(zip(positive_shap_values, positive_shap_indices))
             
-            for label in top_k_labels:
-                shap_val = shap_values_for_class[label]
-                # Chỉ xem xét nếu SHAP value trung bình là dương
-                if shap_val > 0:
-                    top_k_segments.append((shap_val, label))
-                    total_positive_shap += shap_val
-            
-            # Sắp xếp lại top_k_segments dựa trên SHAP value trung bình (để hiển thị)
-            top_k_segments = sorted(top_k_segments, key=lambda x: x[0], reverse=True)
+            # 3. SẮP XẾP danh sách các cặp này dựa trên SHAP value (phần tử đầu tiên)
+            #    Đây là thay đổi cốt lõi theo yêu cầu của bạn.
+            sorted_by_shap = sorted(shap_label_pairs, key=lambda x: x[0], reverse=True)
+            print('Số lượng' , len(sorted_by_shap))
+            top_k_segments = sorted_by_shap[:self.top_k]
+
+            top_labels = [label for shap, label in top_k_segments]
+            temp_labels[class_idx] = top_labels
             # 4. Bây giờ, tạo danh sách (cường độ, label) cuối cùng DỰA TRÊN THỨ TỰ ĐÃ SẮP XẾP MỚI
             top_shap_probs = []
             top_pixel_counts = []
@@ -345,7 +317,7 @@ class OodKernelExplainer(OODExplainerBase):
                     print("percentile >= 0.5")
                     threshold = chi2.ppf((1- percentile*5* p_value), df=degrees_of_freedom)
                 else:
-                    threshold = chi2.ppf((1 - 0.001), df=degrees_of_freedom)
+                    threshold = chi2.ppf((1 - p_value), df=degrees_of_freedom)
                 
                 segment_label = sample_segment_labels[k]
                 is_anomalous = mahalanobis_dist_sq > threshold

@@ -26,7 +26,7 @@ from oodxai import OodKernelExplainer
 print("--- BẮT ĐẦU SCRIPT ---")
 
 MODEL_PATH = 'testmodel/cat_dogs_huggingface/cat_dog_resnet50_best.pth'
-IMAGE_PATH = "testmodel/cat_dogs_huggingface/CatandDog_segment_noise/Cat/Cat_1.png"
+IMAGE_PATH = "testmodel/cat_dogs_huggingface/CatandDog_segment_noise/Cat/Cat_9.png"
 DATA_ROOT = 'testmodel/cat_dogs_huggingface/Cat_and_Dog_Images/test'
 
 NUM_SUPERPIXELS = 50

@@ -22,12 +22,12 @@ class Plot():
         """Tô màu các vùng superpixel bằng giá trị SHAP tương ứng."""
         out = np.zeros(segmentation.shape)
         for i in range(len(values)):
-            out[segmentation == i + 1] = values[i]
+            out[segmentation == i ] = values[i]
         return out
 
     def plot_kernelshap_with_uncertainty(self, original_image, class_names, segmentation, 
                                          shap_values, unsafe_segments_tuple=None, 
-                                         sample_scores=1, probs=1, ood_percentile=1, detector='Unknown', representative_masked_images=None):
+                                         sample_scores=1, probs=1, ood_percentile=1, detector='Unknown', representative_masked_images=None, top_k_labels=None):
         """
         Hàm vẽ biểu đồ SHAP tùy chỉnh cho KernelSHAP, với khả năng tô đỏ
         các segment được xác định là không an toàn (unsafe/uncertain).
@@ -131,7 +131,26 @@ class Plot():
         ood_info = f"OOD Score ({detector.__class__.__name__}): {sample_scores:.2f} (Anomalous: {ood_percentile:.1f}%)"
         final_title = f"Predicted: '{predicted_class_name}' ({probs[predicted_class_index]:.1%}) | {ood_info}"
         fig.suptitle(final_title, fontsize=14)
-        
+        if top_k_labels:
+            # 1. Xây dựng chuỗi ký tự từ tuple đầu vào
+            top_k_strings = []
+            for class_idx, labels in top_k_labels:
+                # Chuyển list các label (số nguyên) thành chuỗi ký tự
+                labels_str = ', '.join(map(str, labels))
+                # Tạo chuỗi cho từng class
+                s = f"Class '{class_names[class_idx]}': [{labels_str}]"
+                top_k_strings.append(s)
+            
+            # 2. Nối các chuỗi của từng class lại với nhau
+            full_top_k_str = "Top Segments: " + " | ".join(top_k_strings)
+            
+            # 3. Dùng fig.text() để thêm văn bản vào Figure
+            #    - x=0.5, ha='center': Căn giữa theo chiều ngang
+            #    - y=0.93: Đặt ở vị trí ngay dưới suptitle (có thể cần tinh chỉnh)
+            fig.text(0.5, 0.93, full_top_k_str, ha='center', va='center', fontsize=10, color='darkblue', wrap=True)
+        # ==============================================================================
+        # <<< KẾT THÚC CODE MỚI >>>
+
         fig.tight_layout(rect=[0, 0.08, 1, 0.92]) # Điều chỉnh rect để có không gian cho colorbar
         
         # <<< THAY ĐỔI 5: Cập nhật lại cách tính vị trí colorbar >>>
