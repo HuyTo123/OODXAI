@@ -341,11 +341,12 @@ class OodKernelExplainer(OODExplainerBase):
                 # degree of freedom phụ thuộc vào các loại đặc trưng mà ta muốn khai thác 
                 degrees_of_freedom = 3
                 percentile = self.ood_percentile/100
-                if percentile >= 0.5:
-                    print("percentile >= 0.5")
-                    threshold = chi2.ppf((1- percentile*5* p_value), df=degrees_of_freedom)
-                else:
-                    threshold = chi2.ppf((1 - 0.001), df=degrees_of_freedom)
+                threshold = chi2.ppf((1 - percentile * p_value), df=degrees_of_freedom)
+                # if percentile >= 0.5:
+                #     print("percentile >= 0.5")
+                #     threshold = chi2.ppf((1- percentile*5* p_value), df=degrees_of_freedom)
+                # else:
+                #     threshold = chi2.ppf((1 - p_value), df=degrees_of_freedom)
                 
                 segment_label = sample_segment_labels[k]
                 is_anomalous = mahalanobis_dist_sq > threshold
