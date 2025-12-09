@@ -57,12 +57,16 @@ class Ood_segment(OODExplainerBase):
         # 2. Áp dụng bộ lọc Gabor
         # frequency: tần số (độ chi tiết của vân)
         # theta: hướng của vân (0, 45, 90 độ...)
-        filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
+        orientations = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+        energy_maps = []
+        for theta in orientations:
+            filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
+            energy_maps.append(np.sqrt(filt_real**2 + filt_imag**2))
         
         # 3. Tính năng lượng (Magnitude)
-        gabor_energy = np.sqrt(filt_real**2 + filt_imag**2)
+        energy = np.mean(np.stack(energy_maps), axis=0)
         
-        return gabor_energy
+        return energy
     def Extract(self):
         """
         Trích xuất đặc trưng (phiên bản mở rộng).

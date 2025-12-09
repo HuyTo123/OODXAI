@@ -18,6 +18,7 @@ from skimage.filters import gabor
 from skimage.color import rgb2gray
 warnings.filterwarnings("ignore")
 
+
 class OodKernelExplainer(OODExplainerBase):
     def __init__(self, model=None, Ood_name=None, background_data=None, sample=None, device=None, class_name=None,
                  n_segments = 50, compactness = 10, sigma = 1, start_label = 0, transform_mean=[0.485, 0.456, 0.406], transform_std=[0.229, 0.224, 0.225],
@@ -114,8 +115,13 @@ class OodKernelExplainer(OODExplainerBase):
                 image_gray = rgb2gray(image_numpy_float)
             else:
                 image_gray = image_numpy_float
-            filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
-            return np.sqrt(filt_real**2 + filt_imag**2)
+            orientations = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+            energy_maps = []
+            for theta in orientations:
+                filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
+                energy_maps.append(np.sqrt(filt_real**2 + filt_imag**2))
+            energy = np.mean(np.stack(energy_maps), axis = 0)
+            return energy
     def explain(self, n_shap_runs=10): # Thêm tham số n_shap_runs
         """
         Đây là phương thức CÔNG KHAI DUY NHẤT để chạy toàn bộ quy trình.
@@ -497,7 +503,7 @@ class OodKernelExplainer(OODExplainerBase):
         except ValueError as e:
             print(f"Lỗi khi xử lý dòng: '{line}'. Lỗi: {e}")
             return []
-    def _load_ground_truth_staticscal(self, relative_file_path='test/model_stats_MSP_4features.npz'):
+    def _load_ground_truth_staticscal(self, relative_file_path='test/model_stats_MSP_4features4theta.npz'):
         """
         (Helper) Đọc file Ground Truth (GT) .txt theo từng khối 4 dòng.
         """
