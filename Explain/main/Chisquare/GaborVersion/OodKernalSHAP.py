@@ -701,19 +701,16 @@ class OodKernelExplainer(OODExplainerBase):
                 
                 pred_unsafe_dict = dict(explainer_test.uncertainty_segments)
                 pred_topk_dict = dict(explainer_test.sample_labels_topk)
-
-                predicted_class_idx = np.argmax(explainer_test.probs)
+                
                 # Lấy PRED từ giải thích Class 0
-                # pred_unsafe_c0 = pred_unsafe_dict.get(0, [])
-                # pred_topk_c0 = pred_topk_dict.get(0, [])
-                pred_unsafe_final = dict(explainer_test.uncertainty_segments).get(predicted_class_idx, [])
-                pred_topk_final = dict(explainer_test.sample_labels_topk).get(predicted_class_idx, [])
+                pred_unsafe_c0 = pred_unsafe_dict.get(0, [])
+                pred_topk_c0 = pred_topk_dict.get(0, [])
+                
                 # --- LOGIC MỚI (CHỈ CÓ CLASS 0) ---
                 # So sánh PRED (Class 0) với GT (gộp)
                 actual_n_segments = len(np.unique(explainer_test.segments_slic))
-
-                p, r, f1, acc = self._calculate_metrics(gt_unsafe_labels, pred_unsafe_final, actual_n_segments)
-                hr = self._calculate_hit_rate(gt_unsafe_labels, pred_topk_final)
+                p, r, f1, acc = self._calculate_metrics(gt_unsafe_labels, pred_unsafe_c0, actual_n_segments)
+                hr = self._calculate_hit_rate(gt_unsafe_labels, pred_topk_c0)
                 run_results_c0['precision'].append(p)
                 run_results_c0['recall'].append(r)
                 run_results_c0['f1'].append(f1)

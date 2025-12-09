@@ -10,8 +10,7 @@ import math
 from numpy.linalg import pinv
 from collections import Counter
 from sklearn.metrics.pairwise import cosine_similarity
-from skimage.filters import gabor
-from skimage.color import rgb2gray
+
 from oodxai.Explain.main.OodXAIBase import OODExplainerBase
 
 class Ood_segment(OODExplainerBase):
@@ -43,26 +42,7 @@ class Ood_segment(OODExplainerBase):
         self.mean_features = None # Sẽ được tính sau
         self.inv_cov_matrices = None # Sẽ được tính sau
         print("-> Ood_segment đã được tạo và cấu hình đúng chuẩn.")
-    def get_gabor_energy(self, image_numpy_float, frequency=0.6, theta=0):
-        """
-        Tính năng lượng Gabor (Texture Energy) cho toàn bộ ảnh.
-        Trả về một ma trận 2D cùng kích thước ảnh.
-        """
-        # 1. Chuyển sang ảnh xám (Gabor chạy trên 1 kênh màu)
-        if image_numpy_float.shape[-1] == 3:
-            image_gray = rgb2gray(image_numpy_float)
-        else: 
-            image_gray = image_numpy_float
-            
-        # 2. Áp dụng bộ lọc Gabor
-        # frequency: tần số (độ chi tiết của vân)
-        # theta: hướng của vân (0, 45, 90 độ...)
-        filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
-        
-        # 3. Tính năng lượng (Magnitude)
-        gabor_energy = np.sqrt(filt_real**2 + filt_imag**2)
-        
-        return gabor_energy
+
     def Extract(self):
         """
         Trích xuất đặc trưng (phiên bản mở rộng).
@@ -215,12 +195,10 @@ class Ood_segment(OODExplainerBase):
             # --- THAY ĐỔI: GIAI ĐOẠN 1, Bước 3b - Trích xuất "dư thừa" ---
             # Trích xuất đặc trưng cho tất cả MAX_K_TO_ANALYZE segments
             segments_to_extract = sorted_by_shap[:MAX_K_TO_ANALYZE]
-            gabor_map = self.get_gabor_energy(image_numpy_float, frequency=0.6, theta=0)
             #  Chuẩn bị các bước tính toán tiếp theo
             top_intensities = []
             top_shap_probs = []
             top_pixel_counts = []
-            top_gabor_features = []
             top_segment_label = []
             
             for shap_values, segment_label in segments_to_extract:
@@ -234,17 +212,6 @@ class Ood_segment(OODExplainerBase):
                 pixels_in_segment = image_numpy_float[mask]
                 pixel_count = pixels_in_segment.shape[0]
                 top_pixel_counts.append(pixel_count)
-
-                # Gabor feature
-                gabor_values_in_segment = gabor_map[mask]
-                if gabor_values_in_segment.size > 0:
-                    # Lấy trung bình năng lượng Gabor của segment đó:
-                    avg_gabor = np.mean(gabor_values_in_segment)
-                    top_gabor_features.append(avg_gabor)
-                else:
-                    top_gabor_features.append(np.nan)
-
-                # Pixel Intensity    
                 if pixels_in_segment.size > 0:
                     avg_intensity = np.mean(pixels_in_segment) * 255
                     top_intensities.append(avg_intensity)
@@ -257,13 +224,11 @@ class Ood_segment(OODExplainerBase):
                 top_shap_probs.append(np.nan)
             while len(top_pixel_counts) < MAX_K_TO_ANALYZE:
                 top_pixel_counts.append(np.nan)
-            while len(top_gabor_features) < MAX_K_TO_ANALYZE:
-                top_gabor_features.append(np.nan)
             while len(top_segment_label) < MAX_K_TO_ANALYZE:
                 top_segment_label.append(np.nan)
 
             # Kết hợp dữ liệu thành một hàng
-            row_data = [i]  + top_shap_probs + top_intensities + top_pixel_counts + top_gabor_features
+            row_data = [i]  + top_shap_probs + top_intensities + top_pixel_counts 
             row_segment = [i] + top_segment_label
             # Lưu kết quả vào đúng vị trí
             temp_results[predicted_class].append(row_data)
@@ -294,7 +259,7 @@ class Ood_segment(OODExplainerBase):
             k_final = MAX_K_TO_ANALYZE
 
         result_list = []
-        num_full_cols = 1 + 4 * MAX_K_TO_ANALYZE # Số cột đầy đủ
+        num_full_cols = 1 + 3 * MAX_K_TO_ANALYZE # Số cột đầy đủ
         for class_idx, matrix_list in sorted(temp_results.items()):
             if matrix_list:
                 matrix_np = np.array(matrix_list)
@@ -309,7 +274,6 @@ class Ood_segment(OODExplainerBase):
         cols_to_keep.extend(range(1, k_final + 1)) # Cột shap_prob (từ 1 đến k_final)
         cols_to_keep.extend(range(MAX_K_TO_ANALYZE + 1, MAX_K_TO_ANALYZE + k_final + 1)) # Cột intensity
         cols_to_keep.extend(range(2 * MAX_K_TO_ANALYZE + 1, 2 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột pixel_count
-        cols_to_keep.extend(range(3 * MAX_K_TO_ANALYZE + 1, 3 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột gabor_feature
         
         for class_idx, matrix_np in result_list:
             if matrix_np.size > 0:
@@ -317,7 +281,7 @@ class Ood_segment(OODExplainerBase):
                 final_result_list.append((class_idx, trimmed_matrix))
             else:
                 # Ma trận rỗng, cần tạo ma trận rỗng mới với đúng số cột đã cắt
-                num_final_cols_trimmed = 1 + 4 * k_final
+                num_final_cols_trimmed = 1 + 3 * k_final
                 final_result_list.append((class_idx, np.empty((0, num_final_cols_trimmed))))
         
         # Gán dữ liệu đã cắt tỉa vào thuộc tính của class
@@ -385,19 +349,19 @@ class Ood_segment(OODExplainerBase):
                     shap_prob_col = matrix[:, 1 + k]
                     intensity_col = matrix[:, 1 + top_k + k]
                     pixel_count_col = matrix[:, 1 + 2 * top_k + k]
-                    gabor_col = matrix[:, 1 + 3 * top_k + k]
+                    
                     # Lấy mean (sử dụng nanmean là rất tốt)
                     # Nó tự động xử lí NaN mà không cần phải thay thế 
                     mean_shap_prob = np.nanmean(shap_prob_col)
                     mean_intensity = np.nanmean(intensity_col)
                     mean_pixel_count = np.nanmean(pixel_count_col)
-                    mean_gabor = np.nanmean(gabor_col) # Mới
+                    
                     # Nối dài danh sách đặc trưng cho lớp hiện tại
-                    class_features.append([mean_shap_prob, mean_intensity, mean_pixel_count, mean_gabor])
+                    class_features.append([mean_shap_prob, mean_intensity, mean_pixel_count])
 
                     # --- BỔ SUNG: Tính toán ma trận hiệp phương sai cho k hiện tại ---
-                    # 1. Ghép 4 cột đặc trưng lại thành một ma trận (số_ảnh, 4)
-                    feature_matrix_k = np.stack([shap_prob_col, intensity_col, pixel_count_col, gabor_col], axis=1)
+                    # 1. Ghép 3 cột đặc trưng lại thành một ma trận (số_ảnh, 3)
+                    feature_matrix_k = np.stack([shap_prob_col, intensity_col, pixel_count_col], axis=1)
 
                     # 1. Tính trung bình của mỗi cột, bỏ qua các giá trị NaN có sẵn
                     col_mean_k = np.nanmean(feature_matrix_k, axis=0)
@@ -413,7 +377,7 @@ class Ood_segment(OODExplainerBase):
                     # Mục đích là khiến ma trận hiệp phương sai không bị đặc, tránh lỗi khi tính nghịch đảo
                     # Hay nói các khác là +1 giá trị 1*1.10^-6 vào đường chéo chính
                     # Từ đó ma trận luôn có thể nghịch đảo
-                    cov_matrix_k = np.cov(feature_matrix_k, rowvar=False) + np.identity(4) * 1e-6
+                    cov_matrix_k = np.cov(feature_matrix_k, rowvar=False) + np.identity(3) * 1e-6
 
                     # Ma trận thực tế rất có thể bị suy biến, nên ta dùng pseudo-inverse
                     # Ma trận suy biến DET = 0 
@@ -423,9 +387,9 @@ class Ood_segment(OODExplainerBase):
                     class_inv_cov_list.append(inv_cov_matrix_k)
 
             else:
-                class_features = np.full((top_k, 4), np.nan).tolist()
+                class_features = np.full((top_k, 3), np.nan).tolist()
                 # --- BỔ SUNG: Điền ma trận rỗng nếu không đủ dữ liệu ---
-                class_inv_cov_list = np.full((top_k, 4, 4), np.nan)
+                class_inv_cov_list = np.full((top_k, 3, 3), np.nan)
                 
             # 2. Thêm kết quả của lớp này vào danh sách tổng
             summary_list.append(class_features)
@@ -589,7 +553,7 @@ class Ood_segment(OODExplainerBase):
             positive_shap_indices = np.where(shap_values_for_predicted_class > 0)[0]
             
             if len(positive_shap_indices) == 0:
-                num_cols_to_pad = 4 * MAX_K_TO_ANALYZE
+                num_cols_to_pad = 3 * MAX_K_TO_ANALYZE
                 row_data = [i] + [np.nan] * num_cols_to_pad
                 temp_results[predicted_class].append(row_data)
                 continue
@@ -633,9 +597,8 @@ class Ood_segment(OODExplainerBase):
                 k_votes.append(k_j)
 
             # 6. TRÍCH XUẤT ĐẶC TRƯNG "DƯ THỪA" (CHO MAX_K)
-            gabor_map = self.get_gabor_energy(image_numpy_float, frequency=0.6, theta=0)
             segments_to_extract = sorted_by_shap[:MAX_K_TO_ANALYZE]
-            top_intensities, top_shap_probs, top_pixel_counts, top_gabor_features, top_segment_label = [], [], [], [], []
+            top_intensities, top_shap_probs, top_pixel_counts, top_segment_label = [], [], [], []
             
             total_positive_shap = np.sum(positive_shap_values) # Tính lại tổng SHAP dương
             
@@ -648,12 +611,7 @@ class Ood_segment(OODExplainerBase):
                 pixels_in_segment = image_numpy_float[mask]
                 pixel_count = pixels_in_segment.shape[0]
                 top_pixel_counts.append(pixel_count)
-                gabor_vals = gabor_map[mask]
-                #Gabor
-                if gabor_vals.size > 0:
-                    top_gabor_features.append(np.mean(gabor_vals))
-                else:
-                    top_gabor_features.append(np.nan)
+                
                 if pixels_in_segment.size > 0:
                     avg_intensity = np.mean(pixels_in_segment) * 255
                     top_intensities.append(avg_intensity)
@@ -664,8 +622,8 @@ class Ood_segment(OODExplainerBase):
             while len(top_intensities) < MAX_K_TO_ANALYZE: top_intensities.append(np.nan)
             while len(top_shap_probs) < MAX_K_TO_ANALYZE: top_shap_probs.append(np.nan)
             while len(top_pixel_counts) < MAX_K_TO_ANALYZE: top_pixel_counts.append(np.nan)
-            while len(top_gabor_features) < MAX_K_TO_ANALYZE: top_gabor_features.append(np.nan)
-            row_data = [i]  + top_shap_probs + top_intensities + top_pixel_counts + top_gabor_features
+
+            row_data = [i]  + top_shap_probs + top_intensities + top_pixel_counts 
             temp_results[predicted_class].append(row_data)
            
         # --- GIAI ĐOẠN 2: TÍNH TOÁN K_FINAL VÀ CẮT TỈA ---
@@ -689,7 +647,7 @@ class Ood_segment(OODExplainerBase):
 
         # Sắp xếp và Cắt tỉa result_list (dữ liệu đặc trưng)
         result_list = []
-        num_full_cols = 1 + 4 * MAX_K_TO_ANALYZE
+        num_full_cols = 1 + 3 * MAX_K_TO_ANALYZE
         for class_idx, matrix_list in sorted(temp_results.items()):
             if matrix_list:
                 result_list.append((class_idx, np.array(matrix_list)))
@@ -701,12 +659,12 @@ class Ood_segment(OODExplainerBase):
         cols_to_keep.extend(range(1, k_final + 1)) # Cột shap_prob
         cols_to_keep.extend(range(MAX_K_TO_ANALYZE + 1, MAX_K_TO_ANALYZE + k_final + 1)) # Cột intensity
         cols_to_keep.extend(range(2 * MAX_K_TO_ANALYZE + 1, 2 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột pixel_count
-        cols_to_keep.extend(range(3 * MAX_K_TO_ANALYZE + 1, 3 * MAX_K_TO_ANALYZE + k_final + 1)) # Cột pixel_count
+        
         for class_idx, matrix_np in result_list:
             if matrix_np.size > 0:
                 final_result_list.append((class_idx, matrix_np[:, cols_to_keep]))
             else:
-                num_final_cols_trimmed = 1 + 4 * k_final
+                num_final_cols_trimmed = 1 + 3 * k_final
                 final_result_list.append((class_idx, np.empty((0, num_final_cols_trimmed))))
         
         self.aggregated_intensities_tuple = tuple(final_result_list)
