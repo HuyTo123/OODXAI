@@ -115,26 +115,13 @@ class OodKernelExplainer(OODExplainerBase):
                 image_gray = rgb2gray(image_numpy_float)
             else:
                 image_gray = image_numpy_float
-            f_high = 0.6
-            f_low = 0.1 
             orientations = [0, np.pi/4, np.pi/2, 3*np.pi/4]
             energy_maps = []
-            energy_maps_low = []
             for theta in orientations:
-                # Sigma nên tỉ lệ nghịch với tần số để giữ băng thông ổn định
-                # sigma ~ 1/f. Ví dụ: f=0.1 -> sigma=3, f=0.35 -> sigma=1
-                filt_real, filt_imag = gabor(image_gray, frequency=f_low, theta=theta, sigma_x=3, sigma_y=3)
-                energy_maps_low.append(np.sqrt(filt_real**2 + filt_imag**2))
-            energy_low = np.mean(np.stack(energy_maps_low), axis=0)
-
-            # --- Tính cho High Frequency ---
-            energy_maps_high = []
-            for theta in orientations:
-                filt_real, filt_imag = gabor(image_gray, frequency=f_high, theta=theta, sigma_x=1, sigma_y=1)
-                energy_maps_high.append(np.sqrt(filt_real**2 + filt_imag**2))
-            energy_high = np.mean(np.stack(energy_maps_high), axis=0)
-            
-            return energy_high, energy_low
+                filt_real, filt_imag = gabor(image_gray, frequency=frequency, theta=theta)
+                energy_maps.append(np.sqrt(filt_real**2 + filt_imag**2))
+            energy = np.mean(np.stack(energy_maps), axis = 0)
+            return energy
     def explain(self, n_shap_runs=10): # Thêm tham số n_shap_runs
         """
         Đây là phương thức CÔNG KHAI DUY NHẤT để chạy toàn bộ quy trình.
@@ -257,7 +244,7 @@ class OodKernelExplainer(OODExplainerBase):
         temp_results = {class_idx: [] for class_idx in range(self.num_classes)}
         temp_labels = {}
         # 1. Tính bản đồ Gabor của ảnh gốc - dạng float trắng đen
-        gabor_high, gabor_low = self.get_gabor_energy(self.image_numpy_0_1, frequency=0.6)
+        gabor_map = self.get_gabor_energy(self.image_numpy_0_1, frequency=0.6)
         for class_idx in range(self.num_classes):
             top_10_frequent_labels = frequent_segment_labels.get(class_idx, [])
             
@@ -266,7 +253,7 @@ class OodKernelExplainer(OODExplainerBase):
             temp_labels[class_idx] = top_k_labels
             
             if not top_k_labels: # Nếu list rỗng
-                num_cols = 1 + 5 * self.top_k
+                num_cols = 1 + 4 * self.top_k
                 empty_row = [0] + [np.nan] * (num_cols - 1)
                 temp_results[class_idx] = empty_row
                 continue
@@ -291,9 +278,7 @@ class OodKernelExplainer(OODExplainerBase):
             top_shap_probs = []
             top_pixel_counts = []
             top_intensities = []
-            top_gabor_high_features = []
-            top_gabor_low_features = []
-            
+            top_gabor_features = []
             for shap_value, segment_label in top_k_segments:
                 # Tính toán 3 loại đặc trưng
                 prop = round(shap_value / total_positive_shap, 3) if total_positive_shap > 0 else 0
@@ -304,19 +289,12 @@ class OodKernelExplainer(OODExplainerBase):
                 
                 pixel_count = pixels_in_segment.shape[0]
                 top_pixel_counts.append(pixel_count)
-                gabor_high_values = gabor_high[mask]
-                gabor_low_values = gabor_low[mask]
-                if gabor_high_values.size > 0:
-                    # Lấy trung bình năng lượng Gabor của segment đó:
-                    avg_gabor = np.mean(gabor_high_values)
-                    top_gabor_high_features.append(avg_gabor)
+                gabor_vals = gabor_map[mask]
+                #Gabor
+                if gabor_vals.size > 0:
+                    top_gabor_features.append(np.mean(gabor_vals))
                 else:
-                    top_gabor_high_features.append(np.nan)
-                if gabor_low_values.size > 0:
-                    avg_gabor_low = np.mean(gabor_low_values)
-                    top_gabor_low_features.append(avg_gabor_low)
-                else:
-                    top_gabor_low_features.append(np.nan)
+                    top_gabor_features.append(np.nan)
                 if pixels_in_segment.size > 0:
                     avg_intensity = np.mean(pixels_in_segment) * 255
                     top_intensities.append(avg_intensity)
@@ -330,13 +308,11 @@ class OodKernelExplainer(OODExplainerBase):
                 top_pixel_counts.append(np.nan)
             while len(top_intensities) < self.top_k:
                 top_intensities.append(np.nan)    
-            while len(top_gabor_high_features) < self.top_k:
-                top_gabor_high_features.append(np.nan)
-            while len(top_gabor_low_features) < self.top_k:
-                top_gabor_low_features.append(np.nan) # <--- MỚI
+            while len(top_gabor_features) < self.top_k: 
+                top_gabor_features.append(np.nan) # <--- MỚI
             # 4. TẠO HÀNG DỮ LIỆU (ROW) CÓ CẤU TRÚC CHUẨN
             # Dùng index 0 làm placeholder cho ID của sample duy nhất này
-            row_data = [0] + top_shap_probs + top_intensities + top_pixel_counts + top_gabor_high_features + top_gabor_low_features
+            row_data = [0] + top_shap_probs + top_intensities + top_pixel_counts + top_gabor_features
             temp_results[class_idx] = row_data
         # 5. ĐỊNH DẠNG KẾT QUẢ CUỐI CÙNG THÀNH TUPLE( (class, matrix_2D), ... )
         result_list = []
@@ -379,9 +355,7 @@ class OodKernelExplainer(OODExplainerBase):
                     sample_feature_matrix[0, 1 + k],
                     sample_feature_matrix[0, 1 + self.top_k + k],
                     sample_feature_matrix[0, 1 + 2 * self.top_k + k],
-                    sample_feature_matrix[0, 1 + 3 * self.top_k + k],
-                    sample_feature_matrix[0, 1 + 4 * self.top_k + k]
-
+                    sample_feature_matrix[0, 1 + 3 * self.top_k + k]
                 ])
                 
                 if np.isnan(sample_feature_vector_k).any():
@@ -390,7 +364,7 @@ class OodKernelExplainer(OODExplainerBase):
                 diff = sample_feature_vector_k - mean_vec_k
                 mahalanobis_dist_sq = diff.T @ inv_cov_k @ diff
                 # degree of freedom phụ thuộc vào các loại đặc trưng mà ta muốn khai thác 
-                degrees_of_freedom = 5
+                degrees_of_freedom = 4
                 percentile = self.ood_percentile/100
                 #optional: static thresholding
                 # threshold = chi2.ppf((1 - percentile * p_value), df=degrees_of_freedom)
@@ -529,7 +503,7 @@ class OodKernelExplainer(OODExplainerBase):
         except ValueError as e:
             print(f"Lỗi khi xử lý dòng: '{line}'. Lỗi: {e}")
             return []
-    def _load_ground_truth_staticscal(self, relative_file_path='test/model_stats_MSP_5features.npz'):
+    def _load_ground_truth_staticscal(self, relative_file_path='test/model_stats_MSP_4features4theta.npz'):
         """
         (Helper) Đọc file Ground Truth (GT) .txt theo từng khối 4 dòng.
         """
