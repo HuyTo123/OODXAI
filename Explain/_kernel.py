@@ -409,7 +409,6 @@ class KernelExplainer():
                             mask[:] = np.abs(mask - 1)
                             self.addsample(instance.x, mask, w)
                 else:
-                    print(f"Bạn cần ít nhất là '{np.ceil(nsubsets / remaining_weight_vector[subset_size - 1])}' với tổ hợp '{num_full_subsets+1}' ")
                     break
             log.info(f"{num_full_subsets = }")
 
@@ -434,7 +433,12 @@ class KernelExplainer():
                 ind_set = np.random.choice(len(remaining_weight_vector), 4 * samples_left, p=remaining_weight_vector)
                 ind_set_pos = 0
                 used_masks = {}
+                consecutive_failures = 0
+                MAX_FAILURES = 500
                 while samples_left > 0 and ind_set_pos < len(ind_set):
+                    if consecutive_failures > MAX_FAILURES:
+                        log.warning(f"Stopping random sampling early due to {consecutive_failures} consecutive collisions.")
+                        break
                     mask.fill(0.0)
                     ind = ind_set[ind_set_pos]  # we call np.random.choice once to save time and then just read it here
                     # ind có thể = 0 và num_full_sets cũng có thể = 0 cho nên +1 thêm để ra tổ hợp liên minh hợp lí nhất
@@ -442,7 +446,9 @@ class KernelExplainer():
                     # Tạo ra 1 vector nhị phân mà chỉ hiển thị subset_size (Kích thước liên minh) segmentation
                     # Lưu ý là việc chọn segment nào là ngãu nhiên, miễn sao đủ số lượng là được
                     # Lưu ý là ngẫu nhiên có trọng số, nhưng do vì không đủ samples nên chỉ chọn đúng 1 tổ hợp S là [0] số lượng là subsersize
-                    mask[np.random.permutation(self.M)[:subset_size]] = 1.0
+                    # print(f"Debug Kernel: M={self.M}, subset_size={subset_size}, type={type(subset_size)}")
+                    # print(f"Debug Mask Shape: {mask.shape}")
+                    mask[np.random.permutation(self.M)[:int(subset_size)]] = 1.0
 
                     # only add the sample if we have not seen it before, otherwise just
                     # increment a previous sample's weight
@@ -454,9 +460,11 @@ class KernelExplainer():
                         used_masks[mask_tuple] = self.nsamplesAdded
                         samples_left -= 1
                         self.addsample(instance.x, mask, 1.0)
+                        consecutive_failures = 0
                     else:
                         # Nếu mẫu này có rồi thì +1 vô, nhớ là so sánh = tức là số phần tử, trọng số... mới gọi là = nha
                         self.kernelWeights[used_masks[mask_tuple]] += 1.0
+                        consecutive_failures += 1
 
                     # add the compliment sample
                     if samples_left > 0 and subset_size <= num_paired_subset_sizes:
@@ -470,6 +478,7 @@ class KernelExplainer():
                         else:
                             # we know the compliment sample is the next one after the original sample, so + 1
                             self.kernelWeights[used_masks[mask_tuple] + 1] += 1.0
+                    ind_set_pos += 1
 
                 # normalize the kernel weights for the random samples to equal the weight left after
                 # the fixed enumerated samples have been already counted

@@ -4,6 +4,8 @@ import matplotlib.colors as colors
 from skimage.segmentation import mark_boundaries 
 from scipy.ndimage import center_of_mass
 from matplotlib.gridspec import GridSpec 
+from pathlib import Path
+from PIL import Image
 class Plot():
     def __init__(self):
         pass
@@ -57,7 +59,7 @@ class Plot():
         if unsafe_segments_tuple:
             for class_idx, labels in unsafe_segments_tuple:
                 unsafe_segments_dict[class_idx] = labels
-        rep_masked_images_dict = representative_masked_images if representative_masked_images is not None else {}
+        
 
         # --- PHẦN 2: Vẽ biểu đồ ---
         fig = plt.figure(figsize=(5 * (1 + num_classes), 8)) # Tăng chiều cao
@@ -116,15 +118,36 @@ class Plot():
                 for spine in ax_shap.spines.values():
                     spine.set_edgecolor('#FF0000'); spine.set_linewidth(3)
             ax_shap.axis("off")
-
-            # --- Vẽ ảnh đại diện (Ô phía dưới) ---
-            if i in rep_masked_images_dict:
-                mask_image = rep_masked_images_dict[i]
-                ax_rep.imshow(mask_image)
-                ax_rep.set_title(f"Rep. for '{class_names[i]}'", fontsize=10)
+            
+            rep_masked_images_dict = {}
+            current_dir = Path(__file__).resolve().parent
+            groundth_true_path = current_dir / "represent"
+           
+            represnet_path = groundth_true_path / f"{class_names[i]}" /  f"{class_names[i]}.png"
+            if represnet_path.exists():
+                rep_image = Image.open(represnet_path).convert("RGB")
+                rep_image.resize((224,224))
+                rep_masked_images_dict[i] = rep_image
+                ax_rep.imshow(rep_image)
+                ax_rep.set_title(f"Represent. for '{class_names[i]}'", fontsize=10)
             else:
-                ax_rep.set_title(f"No Rep. for '{class_names[i]}'", fontsize=10)
-            ax_rep.axis("off")
+                ax_rep.set_title(f"No Represent. for '{class_names[i]}'", fontsize=10)
+            ax_rep.axis('off')
+            # for i  in range(num_classes):
+            #     represent_path = groundth_true_path / f"{class_names[i]}.png"
+            #     if not represent_path.exists():
+            #         print(f"LỖI: Không tìm thấy ảnh đại diện cho class '{class_names[i]}' tại: {represent_path}")
+            #         continue
+            #     rep_image = Image.open(represent_path).convert("RGB")
+            #     rep_masked_images_dict[i] = rep_image
+            # # --- Vẽ ảnh đại diện (Ô phía dưới) ---
+            # if i in rep_masked_images_dict:
+            #     mask_image = rep_masked_images_dict[i]
+            #     ax_rep.imshow(mask_image)
+            #     ax_rep.set_title(f"Rep. for '{class_names[i]}'", fontsize=10)
+            # else:
+            #     ax_rep.set_title(f"No Rep. for '{class_names[i]}'", fontsize=10)
+            # ax_rep.axis("off")
 
         # --- PHẦN 4: Hoàn thiện biểu đồ ---
         predicted_class_name = class_names[predicted_class_index]
@@ -167,7 +190,73 @@ class Plot():
             cbar.set_label('SHAP Value Contribution', fontsize=10)
             
         plt.show()
+    def default_plot(self, original_image, segmentation, shap_values_3d, class_names, logit):
+        """
+        Vẽ ảnh gốc và SHAP cho TẤT CẢ các class.
+        Hỗ trợ input shap_values dạng (batch, n_segments, n_classes).
+        """
+        # shap_values_3d shape: (1, 50, 2)
+        # num_classes sẽ lấy từ chiều cuối cùng của array hoặc len của class_names
+        num_classes = len(class_names)
+        # 1. Xử lý dữ liệu đầu vào để tìm max_val chung
+        # Chúng ta cần lấy toàn bộ giá trị để tính scale màu chung
+        all_vals = shap_values_3d.flatten()
+        max_val = np.nanpercentile(np.abs(all_vals), 99.9)
+        if max_val == 0: max_val = 1e-6
 
+        cmap = self.create_custom_colormap()
+
+        # 2. Tạo Grid
+        fig, axes = plt.subplots(1, 1 + num_classes, figsize=(5 * (1 + num_classes), 6))
+        if not isinstance(axes, np.ndarray): axes = [axes]
+        ax_original = axes[0]
+        unique_labels = np.unique(segmentation)
+        for label in unique_labels:
+            y, x = center_of_mass(segmentation, segmentation, label)
+            # Dùng ax.text để vẽ số (label) lên vị trí tâm (x, y)
+            ax_original.text(x, y, str(label), 
+                            fontsize=12, 
+                            color='Red', 
+                            ha='center', # Căn giữa theo chiều ngang
+                            va='center')
+        # --- Cột 1: Ảnh gốc ---
+        img_with_bounds = mark_boundaries(original_image, segmentation, color=(1, 1, 0), mode='thick')
+        axes[0].imshow(img_with_bounds)
+        axes[0].set_title("Original Image")
+        axes[0].axis('off')
+
+        # --- Các cột tiếp theo: SHAP cho từng Class ---
+        im = None
+        for i in range(num_classes):
+            ax = axes[i + 1]
+            cls_name = class_names[i]
+            
+            # --- SỬA ĐỔI QUAN TRỌNG TẠI ĐÂY ---
+            # Giả sử shape là (batch, n_segments, n_classes) và batch = 1
+            # Ta lấy: batch 0, tất cả segments, class thứ i
+            shap_vec = shap_values_3d[0, :, i] 
+            
+            # Kiểm tra shape để chắc chắn
+            # print(f"Shape vector cho class {cls_name}: {shap_vec.shape}") 
+
+            heatmap = self.fill_segmentation(shap_vec, segmentation)
+
+            # Vẽ
+            ax.imshow(original_image, alpha=0.15)
+            im = ax.imshow(heatmap, cmap=cmap, vmin=-max_val, vmax=max_val)
+            prob_value = logit[0, i].item()
+            ax.set_title(f"Class: {cls_name} prob={prob_value:.3f}")
+            ax.axis('off')
+
+        # --- Colorbar ---
+        if im:
+            fig.subplots_adjust(bottom=0.2)
+            cbar_ax = fig.add_axes([0.15, 0.1, 0.7, 0.05])
+            cbar = fig.colorbar(im, cax=cbar_ax, orientation='horizontal')
+            cbar.set_label('SHAP Value (Blue: Chống lại, Red: Ủng hộ)')
+        
+        plt.suptitle("SHAP Explanation for All Classes", fontsize=16)
+        plt.show()
     def plot_deepshap(self, original_image, class_names, shap_values, sample_scores, probs, ood_percentile, detector):
         """
         Hàm vẽ biểu đồ SHAP tùy chỉnh.
